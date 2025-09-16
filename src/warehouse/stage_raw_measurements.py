@@ -1,14 +1,21 @@
-#!/usr/bin/env python3
 """
-Stage raw lab CSV runs into partitioned Parquet (02_stage/raw_measurements),
-driven by a YAML procedures schema.
+Parallel staging of raw lab CSV runs into partitioned Parquet (02_stage/raw_measurements),
+driven by a YAML procedures schema. Safe for multi-process execution.
 
-This version (v1.1) fixes:
-- Robust detection of header sections: accepts "#Metadata:" and "#Parameters:" without a space,
-  is case-insensitive, and trims whitespace.
-- If 'Start time' is missing/unparseable, we now fall back to a date parsed from the path
-  (e.g., dated parent folders like 2025-09-12 or 20250912). If that fails, we fall back to the file mtime.
-- Emits clear warnings when fallbacks are used, preventing everything from landing in 1969.
+Key improvements vs. single-process:
+- ProcessPoolExecutor with configurable --workers
+- Avoids manifest write races via per-run event files (then a single merge step)
+- Unique reject filenames (no collisions across processes)
+- Atomic writes to Parquet (tmp rename)
+- Optional cap on Polars threads via POLARS_MAX_THREADS
+
+Usage example:
+    python stage_raw_measurements_parallel.py \
+      --raw-root 01_raw \
+      --stage-root 02_stage/raw_measurements \
+      --procedures-yaml procedures.yml \
+      --workers 6 \
+      --polars-threads 1
 """
 
 from __future__ import annotations
@@ -17,8 +24,11 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -27,7 +37,6 @@ import polars as pl
 import yaml
 
 try:
-    # Python 3.9+
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None  # type: ignore
@@ -36,6 +45,8 @@ except Exception:
 # ----------------------------- Config & Helpers -----------------------------
 
 DEFAULT_LOCAL_TZ = "America/Santiago"  # Controls date partitioning only
+DEFAULT_WORKERS = 6                    # good starting point for 6-core CPUs
+DEFAULT_POLARS_THREADS = 1             # to avoid oversubscription with processes
 
 # Section detectors: tolerant, case-insensitive
 PROC_LINE_RE   = re.compile(r"^#\s*Procedure\s*:\s*<([^>]+)>\s*$", re.I)
@@ -53,7 +64,7 @@ UNIT_VAL_RE = re.compile(
 SPECIAL_DATA_RENAMES = {
     "t (s)": "t_s",
     "I (A)": "I_A",
-    "VL (V)": "VL_V",
+    "VL ((V|v))": "VL_V",  # tolerate lowercase v in unit
     "Plate T (degC)": "plate_C",
     "Ambient T (degC)": "ambient_C",
     "Clock (ms)": "clock_ms",
@@ -183,6 +194,11 @@ class ProcSpec:
     data: Dict[str, str]    # expected types for Data (informational; not enforced here)
 
 
+# Global per-process cache
+_PROC_CACHE: Dict[str, ProcSpec] | None = None
+_PROC_YAML_PATH: Path | None = None
+
+
 def load_procedures_yaml(path: Path) -> Dict[str, ProcSpec]:
     with path.open("r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
@@ -196,6 +212,14 @@ def load_procedures_yaml(path: Path) -> Dict[str, ProcSpec]:
         )
         procs[name] = ps
     return procs
+
+
+def get_procs_cached(path: Path) -> Dict[str, ProcSpec]:
+    global _PROC_CACHE, _PROC_YAML_PATH
+    if _PROC_CACHE is None or _PROC_YAML_PATH != path:
+        _PROC_CACHE = load_procedures_yaml(path)
+        _PROC_YAML_PATH = path
+    return _PROC_CACHE
 
 
 # ----------------------------- Header Parsing -------------------------------
@@ -277,7 +301,6 @@ def cast_block(block: Dict[str, str], spec: Dict[str, str]) -> Dict[str, Any]:
         elif t == "datetime":
             dtv = parse_datetime_any(v)
             if dtv is None:
-                warn(f"could not parse datetime for {k!r}: {v!r}")
                 continue
             out[k] = dtv
         else:
@@ -291,8 +314,21 @@ def standardize_numeric_cols(df: pl.DataFrame) -> pl.DataFrame:
     """
     ren = {}
     for c in df.columns:
+        # Exact renames first
         if c in SPECIAL_DATA_RENAMES:
             ren[c] = SPECIAL_DATA_RENAMES[c]
+            continue
+
+        # Tolerate case variations like "VL (v)"
+        for pat, target in SPECIAL_DATA_RENAMES.items():
+            try:
+                if re.fullmatch(pat, c):
+                    ren[c] = target
+                    break
+            except re.error:
+                pass
+
+        if c in ren:
             continue
 
         m = re.match(r"^(.*)\s*\(([^)]+)\)\s*$", c)
@@ -377,13 +413,11 @@ def resolve_start_dt_and_date(
     Fallbacks: (a) parse 'Start time' from meta; (b) date from path; (c) file mtime.
     Returns (start_dt_utc, date_part, origin), where origin is 'meta'|'path'|'mtime'.
     """
-    # (a) try Start time
     st = meta.get("Start time")
     dtv = st if isinstance(st, dt.datetime) else parse_datetime_any(st)
     if isinstance(dtv, dt.datetime):
         return dtv, local_date_for_partition(dtv, local_tz), "meta"
 
-    # (b) try path
     dpath = extract_date_from_path(src)
     if dpath:
         if ZoneInfo is not None:
@@ -391,94 +425,135 @@ def resolve_start_dt_and_date(
             local_midnight = dt.datetime.combine(dt.date.fromisoformat(dpath), dt.time(), tzinfo=tz)
             utc_dt = local_midnight.astimezone(dt.timezone.utc)
         else:
-            # assume UTC if no zoneinfo
             utc_dt = dt.datetime.fromisoformat(dpath + "T00:00:00").replace(tzinfo=dt.timezone.utc)
-        warn(f"{src.name}: using date from path: {dpath}")
         return utc_dt, dpath, "path"
 
-    # (c) file mtime
     mtime = dt.datetime.fromtimestamp(src.stat().st_mtime, tz=dt.timezone.utc)
     dpart = local_date_for_partition(mtime, local_tz)
-    warn(f"{src.name}: using file mtime for date partition: {dpart}")
     return mtime, dpart, "mtime"
 
 
-def ingest_file(
-    src: Path,
-    stage_root: Path,
-    procs: Dict[str, "ProcSpec"],
-    rejects_dir: Optional[Path],
-    local_tz: str = DEFAULT_LOCAL_TZ,
-    force: bool = False,
+def atomic_write_parquet(df: pl.DataFrame, out_file: Path) -> None:
+    """Write to a temp file in the same dir, then rename atomically."""
+    ensure_dir(out_file.parent)
+    with tempfile.NamedTemporaryFile("wb", delete=False, dir=out_file.parent) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        df.write_parquet(tmp_path)
+        tmp_path.replace(out_file)  # atomic on same filesystem
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        raise
+
+
+def ingest_file_task(
+    src_str: str,
+    stage_root_str: str,
+    procedures_yaml_str: str,
+    local_tz: str,
+    force: bool,
+    events_dir_str: str,
+    rejects_dir_str: str,
 ) -> Dict[str, Any]:
-    hb = parse_header(src)
-    if not hb.proc:
-        raise RuntimeError("missing '# Procedure:'")
-    proc = hb.proc
+    """Worker task: process one CSV path, return an event dict and write per-run event file."""
+    src = Path(src_str)
+    stage_root = Path(stage_root_str)
+    procedures_yaml = Path(procedures_yaml_str)
+    events_dir = Path(events_dir_str)
+    rejects_dir = Path(rejects_dir_str)
 
-    spec = procs.get(proc, ProcSpec({}, {}, {}))
+    # Load YAML once per process
+    procs = get_procs_cached(procedures_yaml)
 
-    params = cast_block(hb.parameters, spec.params)
-    meta = cast_block(hb.metadata, spec.meta)
+    try:
+        hb = parse_header(src)
+        if not hb.proc:
+            raise RuntimeError("missing '# Procedure:'")
+        proc = hb.proc
 
-    # Ensure Start time isn't trapped in params because of odd headers
-    if "Start time" in params and "Start time" not in meta:
-        meta["Start time"] = params["Start time"]
+        spec = procs.get(proc, ProcSpec({}, {}, {}))
 
-    start_dt, date_part, origin = resolve_start_dt_and_date(src, meta, local_tz)
+        params = cast_block(hb.parameters, spec.params)
+        meta = cast_block(hb.metadata, spec.meta)
 
-    # run_id and relative source
-    rid = sha1_short(f"{src.as_posix()}|{start_dt.timestamp()}")
+        if "Start time" in params and "Start time" not in meta:
+            meta["Start time"] = params["Start time"]
 
-    # Read table & standardize column names/types
-    df = read_numeric_table(src, hb.data_header_line)
-    if df.height == 0:
-        raise RuntimeError("empty data table")
-    df = standardize_numeric_cols(df)
+        start_dt, date_part, origin = resolve_start_dt_and_date(src, meta, local_tz)
 
-    with_light, wl_f, lv_f = derive_light_flags(params)
+        rid = sha1_short(f"{src.as_posix()}|{start_dt.timestamp()}")
 
-    # Prepare output directories & file
-    out_dir = stage_root / f"proc={proc}" / f"date={date_part}" / f"run_id={rid}"
-    out_file = out_dir / "part-000.parquet"
+        # Read table & standardize
+        df = read_numeric_table(src, hb.data_header_line)
+        if df.height == 0:
+            raise RuntimeError("empty data table")
+        df = standardize_numeric_cols(df)
 
-    if out_file.exists() and not force:
-        return {
-            "status": "skipped",
-            "run_id": rid,
-            "proc": proc,
-            "rows": df.height,
-            "reason": "exists",
-            "path": str(out_file),
-        }
+        with_light, wl_f, lv_f = derive_light_flags(params)
 
-    ensure_dir(out_dir)
+        out_dir = stage_root / f"proc={proc}" / f"date={date_part}" / f"run_id={rid}"
+        out_file = out_dir / "part-000.parquet"
 
-    extra_cols = {
-        "run_id": rid,
-        "proc": proc,
-        "start_dt": start_dt,
-        "source_file": str(src),
-        "with_light": with_light,
-        "wavelength_nm": wl_f,
-        "laser_voltage_V": lv_f,
-        "chip_group": params.get("Chip group name"),
-        "chip_number": params.get("Chip number"),
-        "sample": params.get("Sample"),
-        "procedure_version": params.get("Procedure version"),
-    }
+        if out_file.exists() and not force:
+            event = {
+                "ts": dt.datetime.now(tz=dt.timezone.utc),
+                "status": "skipped",
+                "run_id": rid,
+                "proc": proc,
+                "rows": df.height,
+                "path": str(out_file),
+                "source_file": str(src),
+                "date_origin": origin,
+            }
+        else:
+            extra_cols = {
+                "run_id": rid,
+                "proc": proc,
+                "start_dt": start_dt,
+                "source_file": str(src),
+                "with_light": with_light,
+                "wavelength_nm": wl_f,
+                "laser_voltage_V": lv_f,
+                "chip_group": params.get("Chip group name"),
+                "chip_number": params.get("Chip number"),
+                "sample": params.get("Sample"),
+                "procedure_version": params.get("Procedure version"),
+            }
+            df = df.with_columns([pl.lit(v).alias(k) for k, v in extra_cols.items()])
+            atomic_write_parquet(df, out_file)
 
-    df = df.with_columns([pl.lit(v).alias(k) for k, v in extra_cols.items()])
-    df.write_parquet(out_file)
+            event = {
+                "ts": dt.datetime.now(tz=dt.timezone.utc),
+                "status": "ok",
+                "run_id": rid,
+                "proc": proc,
+                "rows": df.height,
+                "path": str(out_file),
+                "source_file": str(src),
+                "date_origin": origin,
+            }
 
-    return {
-        "status": "ok",
-        "run_id": rid,
-        "proc": proc,
-        "rows": df.height,
-        "path": str(out_file),
-        "date_origin": origin,
-    }
+        # Write per-run event JSON (unique by run_id)
+        ev_path = Path(events_dir) / f"event-{rid}.json"
+        ensure_dir(ev_path.parent)
+        with ev_path.open("w", encoding="utf-8") as f:
+            json.dump(event, f, ensure_ascii=False, default=str)
+
+        return event
+
+    except Exception as e:
+        # Unique reject filename using path hash
+        phash = sha1_short(src.as_posix(), 12)
+        rej_path = Path(rejects_dir) / f"{src.stem}-{phash}.reject.json"
+        ensure_dir(rej_path.parent)
+        rec = {"source_file": str(src), "error": str(e), "ts": dt.datetime.now(tz=dt.timezone.utc).isoformat()}
+        with rej_path.open("w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=2)
+        return {"status": "reject", "source_file": str(src), "error": str(e)}
 
 
 def discover_csvs(root: Path) -> list[Path]:
@@ -494,84 +569,120 @@ def discover_csvs(root: Path) -> list[Path]:
     return files
 
 
-def write_reject(rejects_dir: Path, src: Path, err: Exception) -> None:
-    ensure_dir(rejects_dir)
-    rec = {
-        "source_file": str(src),
-        "error": str(err),
-    }
-    jpath = rejects_dir / (src.stem + ".reject.json")
-    with jpath.open("w", encoding="utf-8") as f:
-        json.dump(rec, f, ensure_ascii=False, indent=2)
-
-
-def append_manifest(stage_root: Path, record: Dict[str, Any]) -> None:
-    man_dir = stage_root / "_manifest"
-    ensure_dir(man_dir)
-    p = man_dir / "manifest.parquet"
-    row = pl.DataFrame([record])
-    if p.exists():
-        existing = pl.read_parquet(p)
-        out = pl.concat([existing, row], how="vertical_relaxed")
-        out.write_parquet(p)
+def merge_events_to_manifest(events_dir: Path, manifest_path: Path) -> None:
+    """Merge all event JSONs into a single Parquet manifest (idempotent)."""
+    ev_files = sorted(events_dir.glob("event-*.json"))
+    if not ev_files:
+        return
+    rows = []
+    for e in ev_files:
+        try:
+            rows.append(json.loads(e.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+    if not rows:
+        return
+    df = pl.DataFrame(rows)
+    ensure_dir(manifest_path.parent)
+    if manifest_path.exists():
+        # Concatenate and drop duplicates by (run_id, ts, status, path)
+        prev = pl.read_parquet(manifest_path)
+        all_df = pl.concat([prev, df], how="vertical_relaxed")
+        all_df = all_df.unique(subset=["run_id", "ts", "status", "path"], keep="last")
+        all_df.write_parquet(manifest_path)
     else:
-        row.write_parquet(p)
+        df.write_parquet(manifest_path)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Stage raw CSV runs → Parquet (02_stage/raw_measurements)")
+    ap = argparse.ArgumentParser(description="Parallel stage raw CSV runs → Parquet (02_stage/raw_measurements)")
     ap.add_argument("--raw-root", type=Path, required=True, help="Root folder containing dated subfolders with CSVs (01_raw)")
     ap.add_argument("--stage-root", type=Path, required=True, help="Output root (02_stage/raw_measurements)")
     ap.add_argument("--procedures-yaml", type=Path, required=True, help="YAML schema of procedures and types")
-    ap.add_argument("--rejects-dir", type=Path, default=None, help="Folder to write small JSON reject records (default: {stage_root}/../_rejects)")
+    ap.add_argument("--rejects-dir", type=Path, default=None, help="Folder to write reject records (default: {stage_root}/../_rejects)")
+    ap.add_argument("--events-dir", type=Path, default=None, help="Folder for per-run event JSON (default: {stage_root}/_manifest/events)")
+    ap.add_argument("--manifest", type=Path, default=None, help="Path to merged manifest parquet (default: {stage_root}/_manifest/manifest.parquet)")
     ap.add_argument("--local-tz", type=str, default=DEFAULT_LOCAL_TZ, help="Timezone name for date partitioning (default: America/Santiago)")
+    ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help=f"Process workers (default: {DEFAULT_WORKERS})")
+    ap.add_argument("--polars-threads", type=int, default=DEFAULT_POLARS_THREADS, help=f"POLARS_MAX_THREADS per worker (default: {DEFAULT_POLARS_THREADS})")
     ap.add_argument("--force", action="store_true", help="Overwrite if a staged Parquet already exists")
     args = ap.parse_args()
 
     raw_root: Path = args.raw_root
     stage_root: Path = args.stage_root
     rejects_dir: Path = args.rejects_dir or (stage_root.parent / "_rejects")
+    events_dir: Path = args.events_dir or (stage_root / "_manifest" / "events")
+    manifest_path: Path = args.manifest or (stage_root / "_manifest" / "manifest.parquet")
     local_tz: str = args.local_tz
+    workers: int = max(1, args.workers)
+    polars_threads: int = max(1, args.polars_threads)
     force: bool = args.force
 
     if not raw_root.exists():
         raise SystemExit(f"[error] raw root does not exist: {raw_root}")
     ensure_dir(stage_root)
     ensure_dir(rejects_dir)
+    ensure_dir(events_dir)
+    ensure_dir(manifest_path.parent)
 
-    procs = load_procedures_yaml(args.procedures_yaml)
-    if not procs:
-        warn("procedures.yml has no 'procedures' entries; continuing with permissive casting.")
+    # Cap per-process Polars threads to avoid oversubscription
+    os.environ["POLARS_MAX_THREADS"] = str(polars_threads)
+
+    # Eagerly load procedures once in the parent (helps fail fast if path is wrong)
+    _ = get_procs_cached(args.procedures_yaml)
 
     csvs = discover_csvs(raw_root)
     print(f"[info] discovered {len(csvs)} CSV files under {raw_root}")
+    if not csvs:
+        print("[done] nothing to do.")
+        return
 
-    for i, src in enumerate(csvs, 1):
-        try:
-            out = ingest_file(
-                src=src,
-                stage_root=stage_root,
-                procs=procs,
-                rejects_dir=rejects_dir,
-                local_tz=local_tz,
-                force=force,
+    # Submit tasks
+    submitted = 0
+    ok = skipped = reject = 0
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        futs = []
+        for src in csvs:
+            fut = ex.submit(
+                ingest_file_task,
+                str(src),
+                str(stage_root),
+                str(args.procedures_yaml),
+                local_tz,
+                force,
+                str(events_dir),
+                str(rejects_dir),
             )
-            append_manifest(stage_root, {
-                "ts": dt.datetime.now(tz=dt.timezone.utc),
-                "source_file": str(src),
-                "status": out.get("status"),
-                "run_id": out.get("run_id"),
-                "proc": out.get("proc"),
-                "rows": out.get("rows"),
-                "path": out.get("path"),
-                "date_origin": out.get("date_origin"),
-            })
-            print(f"[{i:04d}] {out['status']:>7} {out['proc']:<6} rows={out['rows']:<7} → {out['path']}  ({out.get('date_origin','meta')})")
-        except Exception as e:
-            write_reject(rejects_dir, src, e)
-            print(f"[{i:04d}]  REJECT {src} :: {e}")
+            futs.append((src, fut))
+            submitted += 1
 
-    print("[done] staging complete")
+        # Gather results
+        for i, (src, fut) in enumerate(futs, 1):
+            try:
+                out = fut.result()
+            except Exception as e:
+                reject += 1
+                print(f"[{i:04d}]  REJECT {src} :: {e}")
+                continue
+
+            st = out.get("status")
+            if st == "ok":
+                ok += 1
+            elif st == "skipped":
+                skipped += 1
+            elif st == "reject":
+                reject += 1
+
+            if st in {"ok", "skipped"}:
+                print(f"[{i:04d}] {st.upper():>7} {out['proc']:<6} rows={out['rows']:<7} → {out['path']}  ({out.get('date_origin','meta')})")
+            else:
+                print(f"[{i:04d}]  REJECT {src} :: {out.get('error')}")
+
+    # Merge per-run events to a single manifest parquet (single-thread, race-free)
+    merge_events_to_manifest(events_dir, manifest_path)
+
+    print(f"[done] staging complete  |  ok={ok}  skipped={skipped}  rejects={reject}  submitted={submitted}")
+
 
 if __name__ == "__main__":
     main()
