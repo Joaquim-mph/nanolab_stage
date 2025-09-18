@@ -30,6 +30,10 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
+import scienceplots
+from styles import set_plot_style
+set_plot_style('prism_rain')
+
 
 try:
     from zoneinfo import ZoneInfo
@@ -59,7 +63,7 @@ def parse_date_opt(s: Optional[str]) -> Optional[date]:
 def parse_args(argv=None) -> Config:
     p = argparse.ArgumentParser(description="Collect stats and generate requested plots (Polars-only).")
     p.add_argument("--repo-root", type=Path, default=Path.cwd().resolve(), help="Repo root (default: CWD)")
-    p.add_argument("--warehouse", type=Path, default=Path("data/03_curated/warehouse"),
+    p.add_argument("--warehouse", type=Path, default=Path("data/03_curated"),
                    help="Warehouse path (relative OK)")
     p.add_argument("--out-stats", type=Path, default=Path("data/03_curated/warehouse/stats"),
                    help="Directory for Parquet stats (relative OK)")
@@ -279,10 +283,10 @@ def plot_experiments_by_proc(
     total  = max(sum(counts), 1)
     colors = _rc_cycle_colors(procs, by=color_by)
 
-    PROC_LABEL_WEIGHT = 700
-    PROC_LABEL_SIZE   = 12
-    ANNO_SIZE         = 11
-    ANNO_WEIGHT       = 500
+    PROC_LABEL_WEIGHT = 900
+    PROC_LABEL_SIZE   = 15
+    ANNO_SIZE         = 15
+    ANNO_WEIGHT       = 700
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -542,6 +546,8 @@ def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
         out_path=cfg.plots_dir / "hist_compare_IVg_It_IV_2025-06-01_2025-09-01_bar_stacked.png",
     )
 
+
+    
     # Common cleaning for totals
     EXCLUDE = {"FakeProcedure"}
     RENAME  = {"LaserCalibration": "PVl"}
@@ -578,6 +584,19 @@ def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
         collapse_others=False,
     )
 
+        # Totals bar with ALL procedures
+    plot_experiments_by_proc(
+        totals.filter(~pl.col("proc").is_in(EXCLUDE))
+            .with_columns(pl.col("proc").map_elements(lambda x: RENAME.get(x, x), return_dtype=pl.Utf8))
+            .group_by("proc").agg(pl.col("n_runs").sum().alias("n_runs"))
+            .sort("n_runs", descending=True),
+        out_path=cfg.plots_dir / "totals_all.png",
+        title="Experiments by procedure (all)",
+        top_n=None,              # <- keep ALL
+        collapse_others=False,   # <- don't collapse tail
+        horizontal=True
+    )
+    
     # 6) Stacked bars (top 8 + 'other')
     plot_monthly(monthly_wide, cfg.plots_dir / "monthly_stacked.png",
                  mode="stacked", top_k=8, include_others=True)
