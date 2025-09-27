@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-collect_stats_with_requested_plots.py
--------------------------------------
-Collect experiment statistics (Polars-only) and generate the exact plots requested:
+plt_stats.py
+------------
+Collect experiment statistics from curated warehouse (Polars-only) and generate plots:
 
 1) hist_runs(lf_md, bins=100)
 2) hist_compare_procs(lf_md, procs=("IVg","It","IV"), bins=120)
@@ -13,7 +13,11 @@ Collect experiment statistics (Polars-only) and generate the exact plots request
 7) plot_monthly(monthly_wide, ...) stacked pct
 8) plot_monthly(monthly_wide, ...) lines
 
-Outputs go to --plots-dir (default: docs/figures).
+Compatible with warehouse structure from build_curated_from_stage.py:
+- runs_metadata/date=YYYY-MM/runs-<RID>.parquet
+- Enhanced metadata fields (device_id, with_light, etc.)
+
+Outputs go to --plots-dir (default: figures/warehouse_stats).
 """
 
 from __future__ import annotations
@@ -30,10 +34,6 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
-import scienceplots
-from styles import set_plot_style
-set_plot_style('prism_rain')
-
 
 try:
     from zoneinfo import ZoneInfo
@@ -61,11 +61,11 @@ def parse_date_opt(s: Optional[str]) -> Optional[date]:
     return date.fromisoformat(s) if s else None
 
 def parse_args(argv=None) -> Config:
-    p = argparse.ArgumentParser(description="Collect stats and generate requested plots (Polars-only).")
+    p = argparse.ArgumentParser(description="Collect stats and generate plots from curated warehouse (Polars-only).")
     p.add_argument("--repo-root", type=Path, default=Path.cwd().resolve(), help="Repo root (default: CWD)")
     p.add_argument("--warehouse", type=Path, default=Path("data/03_curated"),
                    help="Warehouse path (relative OK)")
-    p.add_argument("--out-stats", type=Path, default=Path("data/03_curated/warehouse/stats"),
+    p.add_argument("--out-stats", type=Path, default=Path("data/03_curated/stats"),
                    help="Directory for Parquet stats (relative OK)")
     p.add_argument("--docs-dir", type=Path, default=Path("docs"),
                    help="Directory for CSV outputs (relative OK)")
@@ -118,7 +118,7 @@ def local_date_bounds_to_utc(tzname: str, start: Optional[date], end_excl: Optio
     return (d_to_utc(start) if start else None, d_to_utc(end_excl) if end_excl else None)
 
 # ---------------------------
-# Plotting helpers (adapted from your functions)
+# Plotting helpers
 # ---------------------------
 
 def _to_date(x):
@@ -141,7 +141,6 @@ def _rc_cycle_colors(labels, by: str = "order"):
 
 def hist_runs(lf_md, *, tz, bins=100, proc=None, start=None, end=None,
               figsize=(15, 6), histtype="step", out_path: Optional[Path] = None):
-    import matplotlib.dates as mdates
     lf = (
         lf_md.with_columns(to_local(pl.col("start_dt"), tz).alias("start_local"))
              .with_columns(pl.col("start_local").dt.date().alias("start_day_local"))
@@ -186,7 +185,6 @@ def hist_runs(lf_md, *, tz, bins=100, proc=None, start=None, end=None,
 def hist_compare_procs(lf_md, tz, procs, *, bins=100, start=None, end=None,
                        histtype="step", stacked=False, density=False, figsize=(15, 6),
                        out_path: Optional[Path] = None):
-    import matplotlib.dates as mdates
     lf = (
         lf_md.with_columns(to_local(pl.col("start_dt"), tz).alias("start_local"))
              .with_columns(pl.col("start_local").dt.date().alias("start_day_local"))
@@ -283,10 +281,10 @@ def plot_experiments_by_proc(
     total  = max(sum(counts), 1)
     colors = _rc_cycle_colors(procs, by=color_by)
 
-    PROC_LABEL_WEIGHT = 900
-    PROC_LABEL_SIZE   = 15
-    ANNO_SIZE         = 15
-    ANNO_WEIGHT       = 700
+    PROC_LABEL_WEIGHT = 700
+    PROC_LABEL_SIZE   = 12
+    ANNO_SIZE         = 11
+    ANNO_WEIGHT       = 500
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -451,7 +449,7 @@ def build_frames(cfg: Config):
             lf_md = lf_md.filter(reduce(operator.and_, conds))
 
     # Local-day key for daily counts and histograms
-    lf_md_local = lf_md.with_columns(to_local(pl.col("start_dt"), cfg.local_tz).alias("start_local"))                            .with_columns(pl.col("start_local").dt.date().alias("start_day_local"))
+    lf_md_local = lf_md.with_columns(to_local(pl.col("start_dt"), cfg.local_tz).alias("start_local")).with_columns(pl.col("start_local").dt.date().alias("start_day_local"))
 
     # 1) Counts per local day
     per_day = (
@@ -469,13 +467,17 @@ def build_frames(cfg: Config):
                    .collect()
     )
 
-    # 3) One-row summary
+    # 3) Enhanced summary with new warehouse fields
     summary = (
         lf_md_local.select(
             pl.len().alias("total_runs"),
-            pl.col("proc").n_unique().alias("distinct_kinds"),
+            pl.col("proc").n_unique().alias("distinct_procs"),
+            pl.col("device_id").n_unique().alias("distinct_devices"),
+            pl.col("chip_group").n_unique().alias("distinct_chip_groups"),
             pl.col("start_dt").min().alias("first_run_utc"),
             pl.col("start_dt").max().alias("last_run_utc"),
+            pl.col("with_light").sum().alias("runs_with_light"),
+            pl.col("n_rows").sum().alias("total_data_rows"),
         ).collect()
     )
 
@@ -518,9 +520,6 @@ def save_tables(cfg: Config, per_day, totals, summary, monthly, monthly_wide):
 # ---------------------------
 
 def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
-    # 2b) hist_compare_procs(lf_md, procs=("IVg","It"), bins=120) — overlay IVg vs It
-    # (will be placed after other plots below if anchors fail)
-
     cfg.plots_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) hist_runs(lf_md, bins=100)
@@ -532,13 +531,13 @@ def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
     hist_compare_procs(lf_md_local, tz=cfg.local_tz, procs=procs, bins=120,
                        out_path=cfg.plots_dir / "hist_compare_IVg_It_IV_bins120.png")
 
-            # 2b) hist_compare_procs(lf_md, procs=("IVg","It"), bins=120) — overlay IVg vs It
+    # 2b) hist_compare_procs(lf_md, procs=("IVg","It"), bins=120) – overlay IVg vs It
     hist_compare_procs(
         lf_md_local, tz=cfg.local_tz, procs=("IVg","It"), bins=120,
         out_path=cfg.plots_dir / "hist_compare_IVg_It_bins120.png",
     )
 
-# 3) hist_compare_procs with date range, bar + stacked
+    # 3) hist_compare_procs with date range, bar + stacked
     hist_compare_procs(
         lf_md_local, tz=cfg.local_tz, procs=procs,
         start="2025-06-01", end="2025-09-01",
@@ -546,8 +545,6 @@ def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
         out_path=cfg.plots_dir / "hist_compare_IVg_It_IV_2025-06-01_2025-09-01_bar_stacked.png",
     )
 
-
-    
     # Common cleaning for totals
     EXCLUDE = {"FakeProcedure"}
     RENAME  = {"LaserCalibration": "PVl"}
@@ -584,19 +581,6 @@ def produce_requested_plots(cfg: Config, lf_md_local, totals, monthly_wide):
         collapse_others=False,
     )
 
-        # Totals bar with ALL procedures
-    plot_experiments_by_proc(
-        totals.filter(~pl.col("proc").is_in(EXCLUDE))
-            .with_columns(pl.col("proc").map_elements(lambda x: RENAME.get(x, x), return_dtype=pl.Utf8))
-            .group_by("proc").agg(pl.col("n_runs").sum().alias("n_runs"))
-            .sort("n_runs", descending=True),
-        out_path=cfg.plots_dir / "totals_all.png",
-        title="Experiments by procedure (all)",
-        top_n=None,              # <- keep ALL
-        collapse_others=False,   # <- don't collapse tail
-        horizontal=True
-    )
-    
     # 6) Stacked bars (top 8 + 'other')
     plot_monthly(monthly_wide, cfg.plots_dir / "monthly_stacked.png",
                  mode="stacked", top_k=8, include_others=True)
@@ -619,10 +603,14 @@ def main(argv=None) -> int:
     save_tables(cfg, per_day, totals, summary, monthly, monthly_wide)
 
     if cfg.do_print:
-        print("\n=== Summary ==="); print(summary)
-        print("\n=== Totals by proc ==="); print(totals)
-        print("\n=== Per day (tail) ==="); print(per_day.tail(10))
-        print("\n=== Monthly wide (head) ==="); print(monthly_wide.head(12))
+        print("\n=== Enhanced Experiment Summary ===")
+        print(summary)
+        print("\n=== Totals by Procedure ===")
+        print(totals)
+        print("\n=== Recent Daily Activity (last 10 days) ===")
+        print(per_day.tail(10))
+        print("\n=== Monthly Activity by Procedure (first 12 months) ===")
+        print(monthly_wide.head(12))
 
     if cfg.make_plots:
         produce_requested_plots(cfg, lf_md_local, totals, monthly_wide)
