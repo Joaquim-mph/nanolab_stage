@@ -1,4 +1,3 @@
-# file: stage_raw_measurements_yaml_parallel.py
 from __future__ import annotations
 
 import argparse
@@ -13,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
-
+from stage_utils import *
 import polars as pl
 import yaml
 
@@ -35,83 +34,21 @@ META_LINE_RE   = re.compile(r"^#\s*Metadata\s*:\s*$", re.I)
 DATA_LINE_RE   = re.compile(r"^#\s*Data\s*:\s*$", re.I)
 KV_PAT         = re.compile(r"^#\s*([^:]+):\s*(.*)\s*$")
 
-def warn(msg: str) -> None:
-    print(f"[warn] {msg}", file=sys.stderr)
-
-def sha1_short(s: str, n: int = 16) -> str:
-    return hashlib.sha1(s.encode()).hexdigest()[:n]
-
-def to_bool(s: Any) -> bool:
-    return str(s).strip().lower() in {"1", "true", "yes", "on", "y"}
-
-def parse_number_unit(s: Any) -> Tuple[Optional[float], Optional[str]]:
-    if s is None:
-        return None, None
-    if isinstance(s, (int, float)):
-        return float(s), None
-    m = re.match(r"^\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*([^\s]+)?\s*$", str(s))
-    if not m:
-        return None, None
-    return float(m.group(1)), m.group(2)
-
-def parse_datetime_any(x: Any) -> Optional[dt.datetime]:
-    if x is None:
-        return None
-    if isinstance(x, (int, float)):
-        try:
-            return dt.datetime.fromtimestamp(float(x), tz=dt.timezone.utc)
-        except Exception:
-            return None
-    s = str(x).strip()
-    try:
-        return dt.datetime.fromtimestamp(float(s), tz=dt.timezone.utc)
-    except Exception:
-        pass
-    try:
-        d = dt.datetime.fromisoformat(s)
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=dt.timezone.utc)
-        return d.astimezone(dt.timezone.utc)
-    except Exception:
-        return None
-
-def local_date_for_partition(ts_utc: dt.datetime, tz_name: str) -> str:
-    if tz_name and ZoneInfo is not None:
-        try:
-            return ts_utc.astimezone(ZoneInfo(tz_name)).date().isoformat()
-        except Exception:
-            pass
-    return ts_utc.date().isoformat()
-
-def ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-def extract_date_from_path(p: Path) -> Optional[str]:
-    s = str(p)
-    m = re.search(r"\b(\d{4})[-_](\d{2})[-_](\d{2})\b", s)
-    if m:
-        y, mo, d = m.groups()
-        try:
-            dt.date(int(y), int(mo), int(d))
-            return f"{y}-{mo}-{d}"
-        except Exception:
-            pass
-    m = re.search(r"\b(\d{8})\b", s)
-    if m:
-        raw = m.group(1)
-        y, mo, d = raw[:4], raw[4:6], raw[6:8]
-        try:
-            dt.date(int(y), int(mo), int(d))
-            return f"{y}-{mo}-{d}"
-        except Exception:
-            pass
-    return None
-
-
 # ----------------------------- YAML ------------------------------
 
 @dataclass
 class ProcSpec:
+    """
+    Schema specification for a measurement procedure.
+    
+    Defines expected types for Parameters, Metadata, and Data columns
+    as declared in the procedures YAML file.
+    
+    Attributes:
+        params: Type mappings for parameter fields (e.g., {"Laser wavelength": "float"})
+        meta: Type mappings for metadata fields (e.g., {"Start time": "datetime"})
+        data: Type mappings for data columns (e.g., {"I (A)": "float", "Vsd (V)": "float"})
+    """
     params: Dict[str, str]
     meta: Dict[str, str]
     data: Dict[str, str]
@@ -119,7 +56,38 @@ class ProcSpec:
 _PROC_CACHE: Dict[str, ProcSpec] | None = None
 _PROC_YAML_PATH: Path | None = None
 
+
 def load_procedures_yaml(path: Path) -> Dict[str, ProcSpec]:
+    """
+    Load procedure specifications from YAML schema file.
+    
+    Parses a YAML file containing procedure definitions with their expected
+    Parameters, Metadata, and Data column types. Used for validation and
+    type casting during CSV ingestion.
+    
+    Args:
+        path: Path to procedures YAML file
+        
+    Returns:
+        Dictionary mapping procedure names to their ProcSpec specifications
+        
+    Example YAML structure:
+        procedures:
+          iv_sweep:
+            Parameters:
+              Laser wavelength: float
+              Chip number: int
+            Metadata:
+              Start time: datetime
+            Data:
+              I (A): float
+              Vsd (V): float
+              
+    Example:
+        >>> specs = load_procedures_yaml(Path("procedures.yaml"))
+        >>> specs["iv_sweep"].data
+        {"I (A)": "float", "Vsd (V)": "float"}
+    """
     with path.open("r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
     procs = {}
@@ -132,7 +100,24 @@ def load_procedures_yaml(path: Path) -> Dict[str, ProcSpec]:
         )
     return procs
 
+
 def get_procs_cached(path: Path) -> Dict[str, ProcSpec]:
+    """
+    Get procedure specifications with caching.
+    
+    Loads procedures YAML file and caches the result. Subsequent calls
+    with the same path return cached data. Cache is invalidated if path changes.
+    
+    Args:
+        path: Path to procedures YAML file
+        
+    Returns:
+        Dictionary mapping procedure names to their ProcSpec specifications
+        
+    Note:
+        Cache is global and persists across function calls within the same process.
+        Each worker process in parallel execution maintains its own cache.
+    """
     global _PROC_CACHE, _PROC_YAML_PATH
     if _PROC_CACHE is None or _PROC_YAML_PATH != path:
         _PROC_CACHE = load_procedures_yaml(path)
@@ -144,12 +129,61 @@ def get_procs_cached(path: Path) -> Dict[str, ProcSpec]:
 
 @dataclass
 class HeaderBlocks:
+    """
+    Parsed sections from a CSV file header.
+    
+    Represents the structured header of a measurement CSV file, which contains
+    metadata comments before the actual data table begins.
+    
+    Attributes:
+        proc: Procedure name (extracted from "# Procedure: <name>" line)
+        parameters: Experimental parameters as key-value pairs
+        metadata: Runtime metadata as key-value pairs
+        data_header_line: Line number where "# Data:" marker appears (data starts next line)
+    """
     proc: Optional[str]
     parameters: Dict[str, str]
     metadata: Dict[str, str]
     data_header_line: Optional[int]
 
+
 def parse_header(path: Path) -> HeaderBlocks:
+    """
+    Parse structured header from measurement CSV file.
+    
+    Extracts procedure name, parameters, and metadata from comment lines
+    at the beginning of a CSV file. The header follows this structure:
+    
+    # Procedure: <name>
+    # Parameters:
+    # key1: value1
+    # key2: value2
+    # Metadata:
+    # key3: value3
+    # Data:
+    [CSV table starts here]
+    
+    Args:
+        path: Path to CSV file with structured header
+        
+    Returns:
+        HeaderBlocks containing parsed procedure, parameters, metadata,
+        and the line number where data begins
+        
+    Example:
+        >>> hb = parse_header(Path("experiment.csv"))
+        >>> hb.proc
+        'iv_sweep'
+        >>> hb.parameters["Laser wavelength"]
+        '450'
+        >>> hb.metadata["Start time"]
+        '2025-01-15T10:30:00Z'
+        
+    Note:
+        - If "Start time" appears in parameters but not metadata, it's copied to metadata
+        - Handles malformed headers gracefully (missing sections return empty dicts)
+        - Uses 'errors="ignore"' when reading to handle encoding issues
+    """
     proc = None
     params: Dict[str, str] = {}
     meta: Dict[str, str] = {}
@@ -192,6 +226,38 @@ def parse_header(path: Path) -> HeaderBlocks:
 # --------------------------- Casting / Normalizing --------------------------
 
 def cast_block(block: Dict[str, str], spec: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Cast header block values to their declared types.
+    
+    Applies type casting to parameter or metadata values according to the
+    YAML specification. Handles special cases like numeric values with units
+    and datetime parsing.
+    
+    Args:
+        block: Dictionary of key-value pairs from CSV header (all strings)
+        spec: Type specification mapping from YAML (e.g., {"Laser wavelength": "float"})
+        
+    Returns:
+        Dictionary with values cast to appropriate Python types
+        
+    Supported types:
+        - "int": Integer (extracts number from strings like "100ms")
+        - "float": Float (extracts number from strings with units)
+        - "float_no_unit": Float (no unit parsing, strict conversion)
+        - "bool": Boolean (recognizes "1", "true", "yes", "on", "y")
+        - "datetime": datetime object (handles ISO format and Unix timestamps)
+        - "str" or other: Kept as string
+        
+    Example:
+        >>> block = {"Laser wavelength": "450nm", "Chip number": "42"}
+        >>> spec = {"Laser wavelength": "float", "Chip number": "int"}
+        >>> cast_block(block, spec)
+        {"Laser wavelength": 450.0, "Chip number": 42}
+        
+    Note:
+        If casting fails, the original string value is kept to prevent
+        crashes during staging. This ensures robustness against malformed data.
+    """
     out: Dict[str, Any] = {}
     for k, v in block.items():
         t = (spec.get(k) or "str").strip().lower()
@@ -220,17 +286,43 @@ def cast_block(block: Dict[str, str], spec: Dict[str, str]) -> Dict[str, Any]:
 # -------- Column matching to YAML "Data" names (tolerant, but target = YAML) --------
 
 def _norm(s: str) -> str:
+    """
+    Normalize string for robust column name matching.
+    
+    Removes whitespace, punctuation, and case differences to enable
+    fuzzy matching between CSV column names and YAML canonical names.
+    
+    Args:
+        s: String to normalize (typically a column name)
+        
+    Returns:
+        Normalized string (lowercase, no spaces/punctuation)
+        
+    Example:
+        >>> _norm("Vsd (V)")
+        'vsdv'
+        >>> _norm("VDS [V]")
+        'vdsv'
+        >>> _norm("V_DS_V")
+        'vdsv'
+        >>> _norm("Plate T (°C)")
+        'platetdegc'
+        
+    Note:
+        Handles Unicode degree symbols (°, ℃) by converting to "deg"/"degc"
+    """
     # why: robust compare across "Vsd (V)" vs "vd_v" vs "VDS"
     s = s.strip()
     s = s.lower()
     s = re.sub(r"\s+", "", s)
     s = s.replace("_", "")
     s = s.replace("-", "")
-    s = s.replace("°", "deg")
-    s = s.replace("℃", "degc")
+    s = s.replace("Â°", "deg")
+    s = s.replace("â„ƒ", "degc")
     s = s.replace("(", "").replace(")", "")
     s = s.replace("[", "").replace("]", "")
     return s
+
 
 # Synonym seeds per YAML key (targets); each value is a list of regexes or literal alt names.
 YAML_DATA_SYNONYMS: Dict[str, List[str]] = {
@@ -245,9 +337,34 @@ YAML_DATA_SYNONYMS: Dict[str, List[str]] = {
     "Vg (V)":        [r"^vg(_v)?$"],
 }
 
+
 def build_yaml_rename_map(df_cols: List[str], yaml_data: Dict[str, str]) -> Dict[str, str]:
     """
-    Return mapping {src_col -> target_yaml_col}. If multiple df cols match a target, pick first stable order.
+    Build mapping from CSV column names to YAML canonical names.
+    
+    Uses three-tier matching strategy to handle naming variations:
+    1. Exact normalized match (after removing punctuation/case)
+    2. Synonym pattern matching (regex-based common variations)
+    3. Uppercase heuristic (tries uppercased version)
+    
+    Args:
+        df_cols: List of column names from CSV DataFrame
+        yaml_data: Target column names from YAML Data specification
+        
+    Returns:
+        Dictionary mapping {csv_column_name -> yaml_canonical_name}
+        Only includes columns that successfully matched.
+        
+    Example:
+        >>> df_cols = ["i_a", "VDS", "vg_v", "time"]
+        >>> yaml_data = {"I (A)": "float", "Vsd (V)": "float", "Vg (V)": "float", "t (s)": "float"}
+        >>> build_yaml_rename_map(df_cols, yaml_data)
+        {'i_a': 'I (A)', 'VDS': 'Vsd (V)', 'vg_v': 'Vg (V)', 'time': 't (s)'}
+        
+    Note:
+        - If multiple CSV columns match the same target, only the first (in order) is used
+        - Case-insensitive matching
+        - Handles common variations like "I" vs "Id" vs "IDS" vs "current"
     """
     rename: Dict[str, str] = {}
     by_norm = {_norm(c): c for c in df_cols}
@@ -280,8 +397,40 @@ def build_yaml_rename_map(df_cols: List[str], yaml_data: Dict[str, str]) -> Dict
                     break
     return rename
 
+
 def cast_df_data_types(df: pl.DataFrame, yaml_data: Dict[str, str]) -> pl.DataFrame:
-    """Cast columns present in df to the types declared in YAML Data."""
+    """
+    Cast DataFrame columns to types declared in YAML Data specification.
+    
+    Applies type casting to data columns that exist in both the DataFrame
+    and the YAML schema. Handles type conversion failures gracefully.
+    
+    Args:
+        df: Polars DataFrame with data columns (potentially after renaming)
+        yaml_data: Type specification from YAML (e.g., {"I (A)": "float"})
+        
+    Returns:
+        DataFrame with columns cast to declared types
+        
+    Supported types:
+        - "float" / "float_no_unit": Cast to Float64
+        - "int": Cast to Int64
+        - "bool": Convert string/numeric to boolean
+        - "datetime": Convert to string (full parsing deferred)
+        - other: Convert to string (Utf8)
+        
+    Example:
+        >>> df = pl.DataFrame({"I (A)": ["0.001", "0.002"], "Vsd (V)": ["1.5", "1.6"]})
+        >>> yaml_data = {"I (A)": "float", "Vsd (V)": "float"}
+        >>> df = cast_df_data_types(df, yaml_data)
+        >>> df.schema
+        {'I (A)': Float64, 'Vsd (V)': Float64}
+        
+    Note:
+        - Uses strict=False to handle invalid values gracefully (null instead of error)
+        - Only casts columns present in both df and yaml_data
+        - Boolean casting recognizes: "1", "true", "yes", "on", "y" (case-insensitive)
+    """
     casts = []
     for col, typ in yaml_data.items():
         if col not in df.columns:
@@ -309,6 +458,32 @@ def cast_df_data_types(df: pl.DataFrame, yaml_data: Dict[str, str]) -> pl.DataFr
 # ------------------------------- IO ----------------------------------
 
 def read_numeric_table(path: Path, header_line: Optional[int]) -> pl.DataFrame:
+    """
+    Read CSV data table with fallback parsing strategy.
+    
+    Attempts to read CSV with comment-aware parsing first, then falls back
+    to manual skip_rows if that fails. Designed to handle measurement CSVs
+    with comment headers.
+    
+    Args:
+        path: Path to CSV file
+        header_line: Line number where data header appears (if known)
+        
+    Returns:
+        Polars DataFrame containing the data table
+        
+    Example:
+        >>> df = read_numeric_table(Path("measurement.csv"), header_line=10)
+        >>> df.columns
+        ['I (A)', 'Vsd (V)', 'Vg (V)', 't (s)']
+        
+    Note:
+        - First tries with comment_prefix="#" to auto-skip comment lines
+        - Falls back to skip_rows if that fails (handles non-standard formats)
+        - Uses low_memory=True for efficiency
+        - truncate_ragged_lines=True handles inconsistent row lengths
+        - try_parse_dates=False keeps dates as strings (faster)
+    """
     try:
         return pl.read_csv(
             path,
@@ -330,7 +505,41 @@ def read_numeric_table(path: Path, header_line: Optional[int]) -> pl.DataFrame:
             truncate_ragged_lines=True,
         )
 
+
 def resolve_start_dt_and_date(src: Path, meta: Dict[str, Any], local_tz: str) -> Tuple[dt.datetime, str, str]:
+    """
+    Determine measurement start datetime and partition date with fallback logic.
+    
+    Uses a three-tier fallback strategy to determine when a measurement occurred:
+    1. Metadata "Start time" field (most reliable)
+    2. Date extracted from file path (e.g., "2025-01-15" in filename)
+    3. File modification time (last resort)
+    
+    Args:
+        src: Path to source CSV file
+        meta: Metadata dictionary (may contain "Start time")
+        local_tz: IANA timezone name for date partitioning (e.g., "America/Santiago")
+        
+    Returns:
+        Tuple of (start_datetime, partition_date, origin_source):
+        - start_datetime: UTC timestamp when measurement started
+        - partition_date: Date string in YYYY-MM-DD format (in local timezone)
+        - origin_source: One of "meta", "path", or "mtime" indicating data source
+        
+    Example:
+        >>> meta = {"Start time": "2025-01-15T10:30:00Z"}
+        >>> resolve_start_dt_and_date(Path("exp.csv"), meta, "America/Santiago")
+        (datetime(2025, 1, 15, 10, 30, tzinfo=timezone.utc), '2025-01-15', 'meta')
+        
+        >>> # No metadata, but path contains date
+        >>> resolve_start_dt_and_date(Path("data/2025-01-15/exp.csv"), {}, "America/Santiago")
+        (datetime(2025, 1, 15, 4, 0, tzinfo=timezone.utc), '2025-01-15', 'path')
+        
+    Note:
+        - All timestamps normalized to UTC internally
+        - Partition date uses local timezone (important for business date grouping)
+        - File mtime fallback ensures function always succeeds
+    """
     st = meta.get("Start time")
     dtv = st if isinstance(st, dt.datetime) else parse_datetime_any(st)
     if isinstance(dtv, dt.datetime):
@@ -348,7 +557,32 @@ def resolve_start_dt_and_date(src: Path, meta: Dict[str, Any], local_tz: str) ->
     dpart = local_date_for_partition(mtime, local_tz)
     return mtime, dpart, "mtime"
 
+
 def atomic_write_parquet(df: pl.DataFrame, out_file: Path) -> None:
+    """
+    Write DataFrame to Parquet with atomic file creation.
+    
+    Uses a temporary file + rename strategy to ensure partial files are never
+    visible. This prevents corruption if the process crashes during write.
+    
+    Args:
+        df: Polars DataFrame to write
+        out_file: Destination path for Parquet file
+        
+    Raises:
+        Exception: If write fails, temporary file is cleaned up
+        
+    Example:
+        >>> df = pl.DataFrame({"a": [1, 2, 3]})
+        >>> atomic_write_parquet(df, Path("output/data.parquet"))
+        # Creates output/data.parquet atomically
+        
+    Note:
+        - Parent directory is created if it doesn't exist
+        - Temporary file created in same directory (ensures same filesystem)
+        - Atomic rename ensures readers never see partial data
+        - Temporary file cleaned up on failure
+    """
     ensure_dir(out_file.parent)
     with tempfile.NamedTemporaryFile("wb", delete=False, dir=out_file.parent) as tmp:
         tmp_path = Path(tmp.name)
@@ -376,6 +610,65 @@ def ingest_file_task(
     rejects_dir_str: str,
     only_yaml_data: bool,
 ) -> Dict[str, Any]:
+    """
+    Process a single CSV file into staged Parquet format.
+    
+    This is the main worker function executed in parallel. It handles the complete
+    pipeline for one CSV file: parsing, validation, column mapping, type casting,
+    metadata enrichment, and Parquet output.
+    
+    Args:
+        src_str: Path to source CSV file (as string for serialization)
+        stage_root_str: Root directory for staged Parquet output
+        procedures_yaml_str: Path to procedures YAML schema file
+        local_tz: IANA timezone name for date partitioning
+        force: If True, overwrite existing Parquet files
+        events_dir_str: Directory for per-run event JSON files
+        rejects_dir_str: Directory for reject records (failed files)
+        only_yaml_data: If True, drop columns not in YAML schema
+        
+    Returns:
+        Event dictionary with processing results:
+        - status: "ok", "skipped", or "reject"
+        - run_id: Unique identifier for this measurement run
+        - proc: Procedure name
+        - rows: Number of data rows
+        - path: Output Parquet file path
+        - source_file: Original CSV file path
+        - date_origin: Source of date ("meta", "path", or "mtime")
+        - error: Error message (only if status="reject")
+        
+    Example output (success):
+        {
+            "ts": datetime(2025, 1, 15, 10, 35, 22),
+            "status": "ok",
+            "run_id": "a1b2c3d4e5f6g7h8",
+            "proc": "iv_sweep",
+            "rows": 1500,
+            "path": "/stage/proc=iv_sweep/date=2025-01-15/run_id=a1b2.../part-000.parquet",
+            "source_file": "/raw/experiment_20250115.csv",
+            "date_origin": "meta"
+        }
+        
+    Processing steps:
+        1. Parse CSV header (procedure, parameters, metadata)
+        2. Validate against YAML schema
+        3. Cast parameter/metadata types
+        4. Read data table
+        5. Rename columns to YAML canonical names
+        6. Cast data column types
+        7. Derive computed flags (e.g., with_light)
+        8. Add metadata columns (run_id, proc, timestamps, etc.)
+        9. Write to Hive-partitioned Parquet structure
+        10. Write event JSON for tracking
+        
+    Note:
+        - Function takes string paths (not Path objects) for pickle serialization
+        - Generates unique run_id from source path + timestamp
+        - Skips processing if output exists and force=False
+        - Writes reject record to separate directory on any error
+        - Uses cached YAML schema (loaded once per worker process)
+    """
     src = Path(src_str)
     stage_root = Path(stage_root_str)
     procedures_yaml = Path(procedures_yaml_str)
@@ -490,6 +783,32 @@ def ingest_file_task(
 # ------------------------------- Orchestration ----------------------------------
 
 def discover_csvs(root: Path) -> list[Path]:
+    """
+    Recursively discover all CSV files under a root directory.
+    
+    Searches for CSV files while excluding common non-data directories
+    and system files.
+    
+    Args:
+        root: Root directory to search
+        
+    Returns:
+        Sorted list of Path objects pointing to CSV files
+        
+    Excluded:
+        - Hidden directories: .git, .venv, __pycache__, .ipynb_checkpoints
+        - macOS resource fork files (starting with "._")
+        
+    Example:
+        >>> csvs = discover_csvs(Path("01_raw"))
+        >>> len(csvs)
+        147
+        >>> csvs[0]
+        Path('01_raw/2025-01-15/experiment_001.csv')
+        
+    Note:
+        Results are sorted for reproducible processing order.
+    """
     EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".ipynb_checkpoints"}
     files: list[Path] = []
     for p in root.rglob("*.csv"):
@@ -501,7 +820,42 @@ def discover_csvs(root: Path) -> list[Path]:
     files.sort()
     return files
 
+
 def merge_events_to_manifest(events_dir: Path, manifest_path: Path) -> None:
+    """
+    Consolidate individual event JSON files into a single Parquet manifest.
+    
+    Reads all event-*.json files from the events directory, combines them
+    into a DataFrame, and merges with any existing manifest. Deduplicates
+    by (run_id, ts, status, path), keeping the latest occurrence.
+    
+    Args:
+        events_dir: Directory containing event-*.json files
+        manifest_path: Path to output manifest.parquet file
+        
+    Example:
+        >>> merge_events_to_manifest(
+        ...     Path("02_stage/_manifest/events"),
+        ...     Path("02_stage/_manifest/manifest.parquet")
+        ... )
+        # Creates/updates manifest.parquet with all processing events
+        
+    Manifest schema:
+        - ts: Timestamp when event occurred
+        - status: "ok", "skipped", or "reject"
+        - run_id: Unique measurement run identifier
+        - proc: Procedure name
+        - rows: Number of data rows processed
+        - path: Output Parquet file path
+        - source_file: Original CSV file path
+        - date_origin: Source of partition date ("meta", "path", or "mtime")
+        
+    Note:
+        - Creates parent directory if needed
+        - Handles missing event files gracefully
+        - Uses vertical_relaxed concat to handle schema variations
+        - Deduplication ensures idempotent reruns
+    """
     ev_files = sorted(events_dir.glob("event-*.json"))
     if not ev_files:
         return
@@ -525,6 +879,65 @@ def merge_events_to_manifest(events_dir: Path, manifest_path: Path) -> None:
 
 
 def main() -> None:
+    """
+    Main orchestration function for CSV-to-Parquet staging pipeline.
+    
+    Coordinates the complete ETL process:
+    1. Discover all CSV files in raw data directory
+    2. Parse command-line arguments
+    3. Validate YAML schema
+    4. Process files in parallel using worker pool
+    5. Consolidate results into manifest
+    6. Report statistics
+    
+    Command-line arguments:
+        --raw-root: Input directory with CSV files (required)
+        --stage-root: Output directory for Parquet files (required)
+        --procedures-yaml: YAML schema file (required)
+        --rejects-dir: Directory for reject records (default: {stage_root}/../_rejects)
+        --events-dir: Directory for event JSONs (default: {stage_root}/_manifest/events)
+        --manifest: Manifest file path (default: {stage_root}/_manifest/manifest.parquet)
+        --local-tz: Timezone for date partitions (default: America/Santiago)
+        --workers: Number of parallel workers (default: 6)
+        --polars-threads: Polars threads per worker (default: 1)
+        --force: Overwrite existing Parquet files
+        --only-yaml-data: Drop non-YAML columns from output
+        
+    Example:
+        $ python stage_raw_measurements.py \
+            --raw-root ./01_raw \
+            --stage-root ./02_stage/raw_measurements \
+            --procedures-yaml ./procedures.yaml \
+            --workers 12 \
+            --force
+            
+        [info] discovered 147 CSV files under ./01_raw
+        [0001]      OK iv_sweep rows=1500    → /stage/proc=iv_sweep/...  (meta)
+        [0002]      OK temp_sw  rows=800     → /stage/proc=temp_sw/...   (path)
+        [0003] SKIPPED iv_sweep rows=1500    → /stage/proc=iv_sweep/...  (meta)
+        ...
+        [done] staging complete  |  ok=120  skipped=25  rejects=2  submitted=147
+        
+    Output structure:
+        02_stage/raw_measurements/
+        ├── proc={procedure}/
+        │   └── date={YYYY-MM-DD}/
+        │       └── run_id={hash}/
+        │           └── part-000.parquet
+        ├── _manifest/
+        │   ├── events/
+        │   │   └── event-{run_id}.json
+        │   └── manifest.parquet
+        └── ../_rejects/
+            └── {filename}-{hash}.reject.json
+            
+    Note:
+        - Sets POLARS_MAX_THREADS environment variable for worker isolation
+        - Exits with error if raw-root doesn't exist
+        - Creates output directories automatically
+        - Prints progress for each file processed
+        - Uses ProcessPoolExecutor for true parallelism
+    """
     ap = argparse.ArgumentParser(description="Stage raw CSVs → Parquet using YAML Data names (parallel & atomic).")
     ap.add_argument("--raw-root", type=Path, required=True, help="Root folder with CSVs (01_raw)")
     ap.add_argument("--stage-root", type=Path, required=True, help="Output root (02_stage/raw_measurements)")
