@@ -29,12 +29,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import polars as pl
 
 # Add project root to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+_PROJECT_ROOT = str(Path(__file__).parent.parent.parent.parent)
+_STAGING_PATH = str(Path(__file__).parent.parent.parent / "staging")
+
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+if _STAGING_PATH not in sys.path:
+    sys.path.insert(0, _STAGING_PATH)
+
 from src.models.parameters import IntermediateParameters
 from pydantic import ValidationError
 
 # Add staging utilities to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "staging"))
 from stage_utils import (
     ensure_dir,
     sha1_short,

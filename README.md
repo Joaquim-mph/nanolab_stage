@@ -28,7 +28,7 @@ python run_pipeline.py --config config/examples/4layer_pipeline.json
 
 # Or step-by-step:
 # 1. Staging (raw CSV → Parquet)
-python src/staging/stage_raw_measurements.py \
+python src/staging/stage_raw_Vmeasurements.py \
   --raw-root data/01_raw \
   --stage-root data/02_stage/raw_measurements \
   --procedures-yaml config/procedures.yml \
