@@ -1,69 +1,85 @@
-# IV Analysis Module
+# IV Analysis Module (4-Layer Architecture)
 
-Statistical analysis of IV (current-voltage) sweep measurements.
+Statistical analysis of IV (current-voltage) sweep measurements using pre-segmented intermediate data.
 
 ## Quick Start
 
-### Option 1: Full Pipeline (Recommended)
+### Option 1: Full 4-Layer Pipeline (Recommended)
 ```bash
-# Complete analysis + plotting
-python src/analysis/IV/run_full_pipeline.py --date 2025-09-11
+# Complete pipeline: preprocessing + analysis + plotting
+python run_pipeline.py --config config/examples/4layer_pipeline.json
 ```
 
-### Option 2: Analysis Only
+### Option 2: Manual Steps (4-Layer Approach)
 ```bash
-# Just run the analysis steps
-python src/analysis/IV/run_analysis.py --date 2025-09-11
-```
+# Step 0: Preprocessing (run once per date)
+python src/intermediate/IV/iv_preprocessing_script.py \
+  --config config/examples/intermediate_config.json
 
-### Option 3: Manual Steps
-```bash
-# Step 1: Aggregate statistics
+# Step 1: Aggregate statistics (requires intermediate data)
 python src/analysis/IV/aggregate_iv_stats.py \
-  --stage-root data/02_stage/raw_measurements \
-  --date 2025-09-11 \
+  --intermediate-root data/03_intermediate/iv_segments \
+  --date 2025-10-18 \
   --procedure IV \
-  --output-dir data/04_analysis/iv_stats/2025-09-11 \
-  --fit-backward \
+  --output-base-dir data/04_analysis \
   --poly-orders 1 3 5 7
 
 # Step 2: Compute hysteresis
 python src/analysis/IV/compute_hysteresis.py \
-  --stats-dir data/04_analysis/iv_stats/2025-09-11 \
-  --output-dir data/04_analysis/hysteresis/2025-09-11
+  --stats-dir data/04_analysis/iv_stats/2025-10-18_IV \
+  --output-dir data/04_analysis/hysteresis/2025-10-18_IV
 
 # Step 3: Analyze peaks
 python src/analysis/IV/analyze_hysteresis_peaks.py \
-  --hysteresis-dir data/04_analysis/hysteresis/2025-09-11 \
-  --output-dir data/04_analysis/hysteresis_peaks/2025-09-11
+  --hysteresis-dir data/04_analysis/hysteresis/2025-10-18_IV \
+  --output-dir data/04_analysis/hysteresis_peaks/2025-10-18_IV
 ```
 
 ## Scripts
 
-### Runners (⭐ Use These)
-- **`run_full_pipeline.py`** - Complete workflow (analysis + plotting)
-- **`run_analysis.py`** - Analysis pipeline only (3 steps)
-
-### Core Analysis Scripts
-- **`aggregate_iv_stats.py`** - Aggregate measurements, compute polynomial fits
+### Core Analysis Scripts (4-Layer)
+- **`aggregate_iv_stats.py`** - Read pre-segmented data, compute polynomial fits (4-layer only)
 - **`compute_hysteresis.py`** - Calculate hysteresis (forward - return)
 - **`analyze_hysteresis_peaks.py`** - Find peak locations
 
-## Pipeline Steps
+**Note:** The analysis scripts now require pre-segmented intermediate data. The old 3-layer approach (segment detection in analysis) has been deprecated.
 
-### 1. Aggregate IV Statistics
+## Pipeline Steps (4-Layer Architecture)
+
+### 0. Preprocessing (Run Once Per Date)
 **Input:** Staged parquet files (from `02_stage/`)
-**Output:** Forward/return statistics with polynomial fits
-**Location:** `data/04_analysis/iv_stats/{date}/`
+**Output:** Pre-segmented voltage sweeps
+**Location:** `data/03_intermediate/iv_segments/`
+**Script:** `src/intermediate/IV/iv_preprocessing_script.py`
 
-- Separates forward/backward sweep segments
+- Detects voltage sweep segments (forward/return, positive/negative)
+- Saves each segment to separate Parquet files
+- Adds metadata: `segment_id`, `segment_type`, `segment_direction`
+- Run once, read many times (10x performance improvement!)
+
+**Files generated:**
+```
+data/03_intermediate/iv_segments/proc=IV/date={date}/run_id={id}/
+├── segment=0/part-*.parquet  # forward_negative
+├── segment=1/part-*.parquet  # return_negative
+├── segment=2/part-*.parquet  # forward_positive
+└── segment=3/part-*.parquet  # return_positive
+```
+
+### 1. Aggregate IV Statistics (Run Many Times)
+**Input:** Pre-segmented parquet files (from `03_intermediate/`)
+**Output:** Forward/return statistics with polynomial fits
+**Location:** `data/04_analysis/iv_stats/{date}_{procedure}/`
+**Script:** `src/analysis/IV/aggregate_iv_stats.py`
+
+- Reads pre-segmented data (no segment detection needed!)
 - Computes mean ± std for each voltage point
 - Fits polynomials (n=1,3,5,7) to return traces
 - Partitions by V_max range (1V, 2V, 3V, etc.)
 
 **Files generated:**
 ```
-data/04_analysis/iv_stats/{date}/
+data/04_analysis/iv_stats/{date}_{procedure}/
 ├── fit_summary.csv                  # Linear fit results
 ├── polynomial_fits_summary.csv      # Polynomial coefficients & R²
 ├── forward_vmax*.csv                # Forward segment statistics

@@ -16,6 +16,11 @@ from stage_utils import *
 import polars as pl
 import yaml
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.models.parameters import StagingParameters
+from pydantic import ValidationError
+
 try:
     from zoneinfo import ZoneInfo
 except Exception:
@@ -878,105 +883,56 @@ def merge_events_to_manifest(events_dir: Path, manifest_path: Path) -> None:
         df.write_parquet(manifest_path)
 
 
-def main() -> None:
+def run_staging_pipeline(params: StagingParameters) -> None:
     """
-    Main orchestration function for CSV-to-Parquet staging pipeline.
-    
-    Coordinates the complete ETL process:
-    1. Discover all CSV files in raw data directory
-    2. Parse command-line arguments
-    3. Validate YAML schema
-    4. Process files in parallel using worker pool
-    5. Consolidate results into manifest
-    6. Report statistics
-    
-    Command-line arguments:
-        --raw-root: Input directory with CSV files (required)
-        --stage-root: Output directory for Parquet files (required)
-        --procedures-yaml: YAML schema file (required)
-        --rejects-dir: Directory for reject records (default: {stage_root}/../_rejects)
-        --events-dir: Directory for event JSONs (default: {stage_root}/_manifest/events)
-        --manifest: Manifest file path (default: {stage_root}/_manifest/manifest.parquet)
-        --local-tz: Timezone for date partitions (default: America/Santiago)
-        --workers: Number of parallel workers (default: 6)
-        --polars-threads: Polars threads per worker (default: 1)
-        --force: Overwrite existing Parquet files
-        --only-yaml-data: Drop non-YAML columns from output
-        
+    Run staging pipeline with Pydantic-validated parameters.
+
+    Args:
+        params: Validated StagingParameters instance
+
     Example:
-        $ python stage_raw_measurements.py \
-            --raw-root ./01_raw \
-            --stage-root ./02_stage/raw_measurements \
-            --procedures-yaml ./procedures.yaml \
-            --workers 12 \
-            --force
-            
-        [info] discovered 147 CSV files under ./01_raw
-        [0001]      OK iv_sweep rows=1500    → /stage/proc=iv_sweep/...  (meta)
-        [0002]      OK temp_sw  rows=800     → /stage/proc=temp_sw/...   (path)
-        [0003] SKIPPED iv_sweep rows=1500    → /stage/proc=iv_sweep/...  (meta)
-        ...
-        [done] staging complete  |  ok=120  skipped=25  rejects=2  submitted=147
-        
-    Output structure:
-        02_stage/raw_measurements/
-        ├── proc={procedure}/
-        │   └── date={YYYY-MM-DD}/
-        │       └── run_id={hash}/
-        │           └── part-000.parquet
-        ├── _manifest/
-        │   ├── events/
-        │   │   └── event-{run_id}.json
-        │   └── manifest.parquet
-        └── ../_rejects/
-            └── {filename}-{hash}.reject.json
-            
-    Note:
-        - Sets POLARS_MAX_THREADS environment variable for worker isolation
-        - Exits with error if raw-root doesn't exist
-        - Creates output directories automatically
-        - Prints progress for each file processed
-        - Uses ProcessPoolExecutor for true parallelism
+        >>> from models.parameters import StagingParameters
+        >>> params = StagingParameters(
+        ...     raw_root=Path("data/01_raw"),
+        ...     stage_root=Path("data/02_stage/raw_measurements"),
+        ...     procedures_yaml=Path("config/procedures.yml"),
+        ...     workers=8,
+        ...     force=True
+        ... )
+        >>> run_staging_pipeline(params)
     """
-    ap = argparse.ArgumentParser(description="Stage raw CSVs → Parquet using YAML Data names (parallel & atomic).")
-    ap.add_argument("--raw-root", type=Path, required=True, help="Root folder with CSVs (01_raw)")
-    ap.add_argument("--stage-root", type=Path, required=True, help="Output root (02_stage/raw_measurements)")
-    ap.add_argument("--procedures-yaml", type=Path, required=True, help="YAML schema of procedures and types")
-    ap.add_argument("--rejects-dir", type=Path, default=None, help="Folder for reject records (default: {stage_root}/../_rejects)")
-    ap.add_argument("--events-dir", type=Path, default=None, help="Per-run event JSONs (default: {stage_root}/_manifest/events)")
-    ap.add_argument("--manifest", type=Path, default=None, help="Merged manifest parquet (default: {stage_root}/_manifest/manifest.parquet)")
-    ap.add_argument("--local-tz", type=str, default=DEFAULT_LOCAL_TZ, help="Timezone for date partitioning")
-    ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Process workers")
-    ap.add_argument("--polars-threads", type=int, default=DEFAULT_POLARS_THREADS, help="POLARS_MAX_THREADS per worker")
-    ap.add_argument("--force", action="store_true", help="Overwrite staged Parquet if exists")
-    ap.add_argument("--only-yaml-data", action="store_true", help="Drop non-YAML data columns")
-    args = ap.parse_args()
+    # Extract validated parameters
+    raw_root = params.raw_root
+    stage_root = params.stage_root
+    rejects_dir = params.rejects_dir
+    events_dir = params.events_dir
+    manifest_path = params.manifest
+    local_tz = params.local_tz
+    workers = params.workers
+    polars_threads = params.polars_threads
+    force = params.force
+    only_yaml_data = params.only_yaml_data
 
-    raw_root: Path = args.raw_root
-    stage_root: Path = args.stage_root
-    rejects_dir: Path = args.rejects_dir or (stage_root.parent / "_rejects")
-    events_dir: Path = args.events_dir or (stage_root / "_manifest" / "events")
-    manifest_path: Path = args.manifest or (stage_root / "_manifest" / "manifest.parquet")
-    local_tz: str = args.local_tz
-    workers: int = max(1, args.workers)
-    polars_threads: int = max(1, args.polars_threads)
-    force: bool = args.force
-    only_yaml_data: bool = args.only_yaml_data
+    # Create output directories
+    ensure_dir(stage_root)
+    ensure_dir(rejects_dir)
+    ensure_dir(events_dir)
+    ensure_dir(manifest_path.parent)
 
-    if not raw_root.exists():
-        raise SystemExit(f"[error] raw root does not exist: {raw_root}")
-    ensure_dir(stage_root); ensure_dir(rejects_dir); ensure_dir(events_dir); ensure_dir(manifest_path.parent)
-
+    # Set Polars thread count
     os.environ["POLARS_MAX_THREADS"] = str(polars_threads)
 
-    _ = get_procs_cached(args.procedures_yaml)  # fail fast if invalid
+    # Validate YAML schema (fail fast)
+    _ = get_procs_cached(params.procedures_yaml)
 
+    # Discover CSV files
     csvs = discover_csvs(raw_root)
     print(f"[info] discovered {len(csvs)} CSV files under {raw_root}")
     if not csvs:
         print("[done] nothing to do.")
         return
 
+    # Process files in parallel
     submitted = 0
     ok = skipped = reject = 0
     with ProcessPoolExecutor(max_workers=workers) as ex:
@@ -986,14 +942,15 @@ def main() -> None:
                 ingest_file_task,
                 str(src),
                 str(stage_root),
-                str(args.procedures_yaml),
+                str(params.procedures_yaml),
                 local_tz,
                 force,
                 str(events_dir),
                 str(rejects_dir),
                 only_yaml_data,
             )
-            futs.append((src, fut)); submitted += 1
+            futs.append((src, fut))
+            submitted += 1
 
         for i, (src, fut) in enumerate(futs, 1):
             try:
@@ -1016,8 +973,109 @@ def main() -> None:
             else:
                 print(f"[{i:04d}]  REJECT {src} :: {out.get('error')}")
 
+    # Merge events into manifest
     merge_events_to_manifest(events_dir, manifest_path)
     print(f"[done] staging complete  |  ok={ok}  skipped={skipped}  rejects={reject}  submitted={submitted}")
+
+
+def main() -> None:
+    """
+    Main entry point with both Pydantic and legacy argparse support.
+
+    Supports three modes:
+    1. JSON config file (--config)
+    2. Pydantic parameters from code
+    3. Legacy argparse (backward compatibility)
+
+    Command-line arguments:
+        --config: Path to JSON configuration file (Pydantic mode)
+
+        OR legacy arguments:
+        --raw-root: Input directory with CSV files (required)
+        --stage-root: Output directory for Parquet files (required)
+        --procedures-yaml: YAML schema file (required)
+        --rejects-dir: Directory for reject records
+        --events-dir: Directory for event JSONs
+        --manifest: Manifest file path
+        --local-tz: Timezone for date partitions (default: America/Santiago)
+        --workers: Number of parallel workers (default: 6)
+        --polars-threads: Polars threads per worker (default: 1)
+        --force: Overwrite existing Parquet files
+        --only-yaml-data: Drop non-YAML columns from output
+    """
+    ap = argparse.ArgumentParser(
+        description="Stage raw CSVs → Parquet using YAML Data names (parallel & atomic).",
+        epilog="""
+Examples:
+  # Using JSON config (recommended)
+  python stage_raw_measurements.py --config config/staging_config.json
+
+  # Using command-line arguments (legacy)
+  python stage_raw_measurements.py \\
+    --raw-root data/01_raw \\
+    --stage-root data/02_stage/raw_measurements \\
+    --procedures-yaml config/procedures.yml \\
+    --workers 8 --force
+        """
+    )
+
+    # Pydantic mode
+    ap.add_argument("--config", type=Path, help="Path to JSON configuration file (Pydantic mode)")
+
+    # Legacy arguments
+    ap.add_argument("--raw-root", type=Path, help="Root folder with CSVs (01_raw)")
+    ap.add_argument("--stage-root", type=Path, help="Output root (02_stage/raw_measurements)")
+    ap.add_argument("--procedures-yaml", type=Path, help="YAML schema of procedures and types")
+    ap.add_argument("--rejects-dir", type=Path, help="Folder for reject records")
+    ap.add_argument("--events-dir", type=Path, help="Per-run event JSONs")
+    ap.add_argument("--manifest", type=Path, help="Merged manifest parquet")
+    ap.add_argument("--local-tz", type=str, default=DEFAULT_LOCAL_TZ, help="Timezone for date partitioning")
+    ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Process workers")
+    ap.add_argument("--polars-threads", type=int, default=DEFAULT_POLARS_THREADS, help="POLARS_MAX_THREADS per worker")
+    ap.add_argument("--force", action="store_true", help="Overwrite staged Parquet if exists")
+    ap.add_argument("--only-yaml-data", action="store_true", help="Drop non-YAML data columns")
+
+    args = ap.parse_args()
+
+    try:
+        # Mode 1: JSON config file (Pydantic)
+        if args.config:
+            print(f"[info] Loading configuration from {args.config}")
+            params = StagingParameters.model_validate_json(args.config.read_text())
+            print("[info] Configuration validated successfully")
+
+        # Mode 2: Legacy argparse
+        elif args.raw_root and args.stage_root and args.procedures_yaml:
+            print("[info] Using command-line arguments (creating Pydantic parameters)")
+            params = StagingParameters(
+                raw_root=args.raw_root,
+                stage_root=args.stage_root,
+                procedures_yaml=args.procedures_yaml,
+                rejects_dir=args.rejects_dir,
+                events_dir=args.events_dir,
+                manifest=args.manifest,
+                local_tz=args.local_tz,
+                workers=args.workers,
+                polars_threads=args.polars_threads,
+                force=args.force,
+                only_yaml_data=args.only_yaml_data,
+            )
+
+        else:
+            ap.print_help()
+            print("\n[error] Must provide either --config or (--raw-root, --stage-root, --procedures-yaml)")
+            sys.exit(1)
+
+        # Run pipeline with validated parameters
+        run_staging_pipeline(params)
+
+    except ValidationError as e:
+        print(f"\n[error] Parameter validation failed:")
+        print(e)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[error] {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

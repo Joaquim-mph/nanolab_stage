@@ -49,41 +49,54 @@ proc={procedure}/date={YYYY-MM-DD}/run_id={hash}/part-000.parquet
 - Idempotent: same source + timestamp → same `run_id`
 - Writes event JSONs and consolidated manifest for tracking
 
-### IV Analysis Pipeline (Most Common Workflow)
+### IV Analysis Pipeline (4-Layer Architecture - Recommended)
 
 **Quick command (runs all steps):**
 ```bash
-python process_iv.py --date 2025-09-11 --procedure IV --compute-hysteresis
+# Full 4-layer pipeline (preprocessing + analysis + plotting)
+python run_pipeline.py --config config/examples/4layer_pipeline.json
 ```
 
-**Manual step-by-step:**
+**What it does:**
+1. ✅ Runs intermediate preprocessing (segments all IV sweeps once)
+2. ✅ Runs analysis (reads pre-segmented data, computes fits)
+3. ✅ Runs plotting (creates publication figures)
+
+**Step-by-step (4-layer approach):**
 ```bash
-# Step 1: Aggregate measurements and compute polynomial fits
+# Step 1: Preprocessing (run once per date)
+python src/intermediate/IV/iv_preprocessing_script.py \
+  --config config/examples/intermediate_config.json
+
+# Step 2: Analysis (run many times, uses pre-segmented data)
 python src/analysis/IV/aggregate_iv_stats.py \
-  --stage-root data/02_stage/raw_measurements \
-  --date 2025-09-11 \
+  --intermediate-root data/03_intermediate/iv_segments \
+  --date 2025-10-18 \
   --procedure IV \
-  --chip-number 71 \
-  --output-dir data/04_analysis/iv_stats/my_analysis \
-  --fit-backward \
+  --output-base-dir data/04_analysis \
   --poly-orders 1 3 5 7
 
-# Step 2: Compute hysteresis
+# Step 3: Compute hysteresis
 python src/analysis/IV/compute_hysteresis.py \
-  --stats-dir data/04_analysis/iv_stats/my_analysis \
-  --output-dir data/04_analysis/hysteresis/my_analysis
+  --stats-dir data/04_analysis/iv_stats/2025-10-18_IV \
+  --output-dir data/04_analysis/hysteresis/2025-10-18_IV
 
-# Step 3: Analyze peak locations
+# Step 4: Analyze peak locations
 python src/analysis/IV/analyze_hysteresis_peaks.py \
-  --hysteresis-dir data/04_analysis/hysteresis/my_analysis \
-  --output-dir data/04_analysis/hysteresis_peaks/my_analysis
+  --hysteresis-dir data/04_analysis/hysteresis/2025-10-18_IV \
+  --output-dir data/04_analysis/hysteresis_peaks/2025-10-18_IV
 
-# Step 4: Create publication figure (8 subplots, all polynomial orders)
+# Step 5: Create publication figure (8 subplots, all polynomial orders)
 python src/ploting/IV/compare_polynomial_orders.py \
-  --hysteresis-dir data/04_analysis/hysteresis/my_analysis \
-  --output-dir plots/my_analysis \
+  --hysteresis-dir data/04_analysis/hysteresis/2025-10-18_IV \
+  --output-dir plots/2025-10-18 \
   --compact --residuals
 ```
+
+**Performance benefits:**
+- Preprocessing runs once: ~2 minutes for 7636 runs
+- Analysis runs many times: ~10 seconds (reads pre-segmented data)
+- 10x faster for repeated analysis on same date!
 
 ### Environment Setup
 ```bash
@@ -261,30 +274,49 @@ nanolab_stage/
 - **`src/staging/stage_raw_measurements.py`**: Main staging script with column normalization, date partitioning, and schema validation
 - **`config/procedures.yml`**: Schema definitions for all procedure types
 
+### Intermediate Layer (4-Layer Architecture)
+- **`src/intermediate/IV/iv_preprocessing_script.py`**: Segments voltage sweeps into forward/return phases, saves to Parquet
+- **`src/models/parameters.py`**: Pydantic v2 parameter classes with validation
+
 ### Analysis Layer (IV Focus)
-- **`src/analysis/IV/aggregate_iv_stats.py`**: Detects forward/backward segments, computes statistics, fits polynomials
+- **`src/analysis/IV/aggregate_iv_stats.py`**: Reads pre-segmented data, computes statistics, fits polynomials (4-layer only)
 - **`src/analysis/IV/compute_hysteresis.py`**: Calculates `I_hyst = I_forward - I_return` for raw and fitted traces
 - **`src/analysis/IV/analyze_hysteresis_peaks.py`**: Finds voltage locations of maximum hysteresis
 - **`src/ploting/IV/compare_polynomial_orders.py`**: Creates 8-subplot comparison figure (recommended for publications)
 
-### Helper Scripts
-- **`process_iv.py`**: Convenience wrapper for the full IV analysis pipeline
+### Pipeline Scripts
+- **`run_pipeline.py`**: Unified pipeline runner with Pydantic configuration (4-layer architecture)
 
-## Analysis Pipeline Organization
+## 4-Layer Pipeline Organization
 
-The `src/analysis/IV/` and `src/ploting/IV/` directories follow a clear structure:
+**Layer 1: Raw** (`data/01_raw/`)
+- CSV files with structured headers
+
+**Layer 2: Stage** (`data/02_stage/raw_measurements/`)
+- Schema-validated, type-cast Parquet files
+- Partitioned by procedure/date/run_id
+
+**Layer 3: Intermediate** (`data/03_intermediate/`)
+- Pre-segmented voltage sweeps (forward/return, positive/negative)
+- Metadata columns: `segment_id`, `segment_type`, `segment_direction`
+- Run once per date, read many times
+
+**Layer 4: Analysis** (`data/04_analysis/`)
+- Statistics, polynomial fits, hysteresis, peaks
+- Reads from intermediate layer (fast!)
 
 **Core Pipeline Scripts (run in order):**
-1. `aggregate_iv_stats.py` - Aggregate measurements + compute fits
-2. `compute_hysteresis.py` - Calculate hysteresis curves
-3. `analyze_hysteresis_peaks.py` - Find peak locations
+1. `iv_preprocessing_script.py` - Segment detection (run once)
+2. `aggregate_iv_stats.py` - Read segments + compute fits (run many times)
+3. `compute_hysteresis.py` - Calculate hysteresis curves
+4. `analyze_hysteresis_peaks.py` - Find peak locations
 
 **Main Visualizers (pick based on need):**
 - ⭐ `compare_polynomial_orders.py` - Best for publication (single 8-subplot figure)
 - `explore_hysteresis.py` - Statistical exploration (5 analysis plots)
 - `visualize_hysteresis.py` - Detailed per-range analysis
 
-See `src/analysis/IV/README.md` for detailed documentation.
+See `4LAYER_COMPLETE.md` for complete architecture documentation.
 
 ## Common Workflows
 
@@ -337,6 +369,9 @@ Typical errors:
 
 ## Important Notes
 
+- **4-Layer Architecture (Required)**: Analysis scripts now require pre-segmented intermediate data
+- **Run preprocessing first**: Always run intermediate step before analysis for each new date
+- **Performance**: Preprocessing runs once (~2 min for 7636 runs), analysis runs many times (~10 sec)
 - **Always use YAML canonical names** for new columns (e.g., `"I (A)"` not `"current"`)
 - **UTC storage, local partitioning**: Timestamps stored UTC, partition dates in local timezone
 - **Idempotency**: Safe to rerun commands; use `--force` to override
@@ -344,6 +379,7 @@ Typical errors:
 - **Error handling**: Staging gracefully degrades on bad values (falls back to string), preventing pipeline crashes
 - **Polynomial order 3** is recommended default for fits (good balance of accuracy vs overfitting)
 - **Hysteresis calculation** uses forward raw data minus return fitted data (fixed 2025-10-05)
+- **3-Layer deprecated**: Old 3-layer approach (segment detection in analysis) is no longer supported
 
 ## Data Format Specifications
 

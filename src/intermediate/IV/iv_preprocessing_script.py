@@ -7,8 +7,10 @@ Segments IV sweep measurements into distinct voltage sweep phases:
 - Forward positive: 0 → +Vmax
 - Return positive: +Vmax → 0
 
-Reads from: 02_stage/raw_measurements/proc=iv_sweep/
+Reads from: 02_stage/raw_measurements/proc=IV/
 Writes to: 03_intermediate/iv_segments/
+
+Now with Pydantic validation for professional configuration management!
 """
 
 from __future__ import annotations
@@ -26,6 +28,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import polars as pl
 
+# Add project root to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+from src.models.parameters import IntermediateParameters
+from pydantic import ValidationError
+
+# Add staging utilities to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "staging"))
 from stage_utils import (
     ensure_dir,
     sha1_short,
@@ -638,156 +647,56 @@ def merge_events_to_manifest(events_dir: Path, manifest_path: Path) -> None:
         df.write_parquet(manifest_path)
 
 
-# ----------------------------- CLI Orchestration -----------------------------
+# ----------------------------- Pydantic Pipeline Function -----------------------------
 
-def main() -> None:
+def run_iv_preprocessing(params: IntermediateParameters) -> None:
     """
-    Main orchestration for IV curve segmentation pipeline.
-    
-    Command-line interface for processing IV sweep measurements:
-    1. Discovers IV sweep files in staged data (02_stage)
-    2. Detects voltage sweep segments in each run
-    3. Writes segmented data to intermediate storage (03_intermediate)
-    4. Generates processing manifest for audit trail
-    
-    Command-line arguments:
-        --stage-root: Staged data directory (default: ./02_stage/raw_measurements)
-        --output-root: Intermediate output directory (default: ./03_intermediate/iv_segments)
-        --voltage-col: Voltage column name (default: "Vsd (V)")
-        --dv-threshold: Noise threshold for voltage changes (default: 0.001)
-        --min-points: Minimum points per segment (default: 5)
-        --workers: Number of parallel workers (default: 6)
-        --polars-threads: Polars threads per worker (default: 1)
-        --force: Overwrite existing segment files
-        --events-dir: Event JSON directory (default: {output_root}/_manifest/events)
-        --manifest: Manifest file path (default: {output_root}/_manifest/manifest.parquet)
-        
-    Example usage:
-        $ python iv_preprocessing.py \
-            --stage-root ./02_stage/raw_measurements \
-            --output-root ./03_intermediate/iv_segments \
-            --workers 12 \
-            --force
-            
-        [info] discovered 48 IV sweep runs
-        [0001]      OK run_id=abc123  segments=4  → 4 files written
-        [0002] SKIPPED run_id=def456  segments=4  (already exists)
-        [0003]   ERROR run_id=ghi789  :: No valid segments detected
-        ...
-        [done] segmentation complete  |  ok=42  skipped=4  errors=2  total=48
-        
-    Output structure:
-        03_intermediate/iv_segments/
-        ├── proc=iv_sweep/
-        │   └── date=YYYY-MM-DD/
-        │       └── run_id=HASH/
-        │           ├── segment=0/part-000.parquet
-        │           ├── segment=1/part-000.parquet
-        │           └── ...
-        └── _manifest/
-            ├── events/segment-RUNID.json
-            └── manifest.parquet
+    Run IV preprocessing pipeline with Pydantic-validated parameters.
+
+    Args:
+        params: Validated IntermediateParameters instance
+
+    Example:
+        >>> from models.parameters import IntermediateParameters
+        >>> params = IntermediateParameters(
+        ...     stage_root=Path("data/02_stage/raw_measurements"),
+        ...     output_root=Path("data/03_intermediate"),
+        ...     procedure="IV",
+        ...     workers=8
+        ... )
+        >>> run_iv_preprocessing(params)
     """
-    ap = argparse.ArgumentParser(
-        description="Segment IV sweeps into voltage phases (parallel & atomic)."
-    )
-    ap.add_argument(
-        "--stage-root",
-        type=Path,
-        default=Path("02_stage/raw_measurements"),
-        help="Staged data root (default: ./02_stage/raw_measurements)"
-    )
-    ap.add_argument(
-        "--output-root",
-        type=Path,
-        default=Path("03_intermediate/iv_segments"),
-        help="Output root for segments (default: ./03_intermediate/iv_segments)"
-    )
-    ap.add_argument(
-        "--voltage-col",
-        type=str,
-        default=DEFAULT_VOLTAGE_COL,
-        help=f"Voltage column name (default: {DEFAULT_VOLTAGE_COL})"
-    )
-    ap.add_argument(
-        "--dv-threshold",
-        type=float,
-        default=DEFAULT_DV_THRESHOLD,
-        help=f"Voltage change threshold for noise filtering (default: {DEFAULT_DV_THRESHOLD})"
-    )
-    ap.add_argument(
-        "--min-points",
-        type=int,
-        default=DEFAULT_MIN_SEGMENT_POINTS,
-        help=f"Minimum points per segment (default: {DEFAULT_MIN_SEGMENT_POINTS})"
-    )
-    ap.add_argument(
-        "--workers",
-        type=int,
-        default=DEFAULT_WORKERS,
-        help="Number of parallel workers"
-    )
-    ap.add_argument(
-        "--polars-threads",
-        type=int,
-        default=DEFAULT_POLARS_THREADS,
-        help="POLARS_MAX_THREADS per worker"
-    )
-    ap.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite existing segment files"
-    )
-    ap.add_argument(
-        "--events-dir",
-        type=Path,
-        default=None,
-        help="Event JSON directory (default: {output_root}/_manifest/events)"
-    )
-    ap.add_argument(
-        "--manifest",
-        type=Path,
-        default=None,
-        help="Manifest file (default: {output_root}/_manifest/manifest.parquet)"
-    )
-    
-    args = ap.parse_args()
-    
-    stage_root: Path = args.stage_root
-    output_root: Path = args.output_root
-    voltage_col: str = args.voltage_col
-    dv_threshold: float = args.dv_threshold
-    min_points: int = args.min_points
-    workers: int = max(1, args.workers)
-    polars_threads: int = max(1, args.polars_threads)
-    force: bool = args.force
-    
-    events_dir: Path = args.events_dir or (output_root / "_manifest" / "events")
-    manifest_path: Path = args.manifest or (output_root / "_manifest" / "manifest.parquet")
-    
-    # Validate inputs
-    if not stage_root.exists():
-        raise SystemExit(f"[error] Stage root does not exist: {stage_root}")
-    
+    # Extract validated parameters
+    stage_root = params.stage_root
+    output_root = params.get_output_dir()  # Use helper method
+    voltage_col = params.voltage_col
+    dv_threshold = params.dv_threshold
+    min_points = params.min_segment_points
+    workers = params.workers
+    polars_threads = params.polars_threads
+    force = params.force
+    events_dir = params.events_dir
+    manifest_path = params.manifest
+
     # Create output directories
     ensure_dir(output_root)
     ensure_dir(events_dir)
     ensure_dir(manifest_path.parent)
-    
+
     # Set Polars threading
     os.environ["POLARS_MAX_THREADS"] = str(polars_threads)
-    
+
     # Discover IV runs
     iv_runs = discover_iv_runs(stage_root)
     print(f"[info] discovered {len(iv_runs)} IV sweep runs in {stage_root}")
-    
+
     if not iv_runs:
         print("[done] no IV sweep data found")
         return
-    
+
     # Process runs in parallel
     ok = skipped = errors = 0
-    
+
     with ProcessPoolExecutor(max_workers=workers) as ex:
         futures = []
         for run_path in iv_runs:
@@ -802,7 +711,7 @@ def main() -> None:
                 events_dir,
             )
             futures.append((run_path, fut))
-        
+
         # Collect results
         for i, (run_path, fut) in enumerate(futures, 1):
             try:
@@ -811,9 +720,9 @@ def main() -> None:
                 errors += 1
                 print(f"[{i:04d}]   ERROR {run_path} :: {e}")
                 continue
-            
+
             status = event.get("status")
-            
+
             if status == "ok":
                 ok += 1
                 seg_count = event.get("segments_detected", 0)
@@ -833,11 +742,11 @@ def main() -> None:
             elif status == "error":
                 errors += 1
                 print(f"[{i:04d}]   ERROR {run_path} :: {event.get('error', 'unknown')}")
-    
+
     # Merge events to manifest
     print("[info] merging events to manifest...")
     merge_events_to_manifest(events_dir, manifest_path)
-    
+
     # Summary
     total = len(iv_runs)
     print(
@@ -845,6 +754,107 @@ def main() -> None:
         f"ok={ok}  skipped={skipped}  errors={errors}  total={total}"
     )
     print(f"[info] manifest written to: {manifest_path}")
+
+
+# ----------------------------- CLI Orchestration -----------------------------
+
+def main() -> None:
+    """
+    Main entry point with both Pydantic and legacy argparse support.
+
+    Supports two modes:
+    1. JSON config file (--config) - Recommended
+    2. Legacy argparse - Backward compatibility
+
+    Command-line arguments:
+        --config: Path to JSON configuration file (Pydantic mode)
+
+        OR legacy arguments:
+        --stage-root: Staged data directory
+        --output-root: Intermediate output directory
+        --procedure: Procedure name (IV, IVg, etc.)
+        --voltage-col: Voltage column name
+        --dv-threshold: Noise threshold
+        --min-points: Minimum points per segment
+        --workers: Number of parallel workers
+        --polars-threads: Polars threads per worker
+        --force: Overwrite existing files
+    """
+    ap = argparse.ArgumentParser(
+        description="Segment IV sweeps into voltage phases with Pydantic validation.",
+        epilog="""
+Examples:
+  # Using JSON config (recommended)
+  python iv_preprocessing_script.py --config config/intermediate.json
+
+  # Using command-line arguments (legacy)
+  python iv_preprocessing_script.py \\
+    --stage-root data/02_stage/raw_measurements \\
+    --output-root data/03_intermediate \\
+    --procedure IV \\
+    --workers 8 --force
+        """
+    )
+
+    # Pydantic mode
+    ap.add_argument("--config", type=Path, help="Path to JSON configuration file (Pydantic mode)")
+
+    # Legacy arguments
+    ap.add_argument("--stage-root", type=Path, help="Staged data root")
+    ap.add_argument("--output-root", type=Path, help="Output root for intermediate data")
+    ap.add_argument("--procedure", type=str, default="IV", help="Procedure name (IV, IVg, IVgT)")
+    ap.add_argument("--voltage-col", type=str, default=DEFAULT_VOLTAGE_COL, help="Voltage column name")
+    ap.add_argument("--dv-threshold", type=float, default=DEFAULT_DV_THRESHOLD, help="Voltage change threshold")
+    ap.add_argument("--min-points", type=int, default=DEFAULT_MIN_SEGMENT_POINTS, help="Minimum points per segment")
+    ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of parallel workers")
+    ap.add_argument("--polars-threads", type=int, default=DEFAULT_POLARS_THREADS, help="Polars threads per worker")
+    ap.add_argument("--force", action="store_true", help="Overwrite existing files")
+    ap.add_argument("--events-dir", type=Path, help="Event JSON directory")
+    ap.add_argument("--manifest", type=Path, help="Manifest file path")
+
+    args = ap.parse_args()
+
+    try:
+        # Mode 1: JSON config file (Pydantic)
+        if args.config:
+            print(f"[info] Loading configuration from {args.config}")
+            params = IntermediateParameters.model_validate_json(args.config.read_text())
+            print("[info] Configuration validated successfully")
+
+        # Mode 2: Legacy argparse
+        elif args.stage_root and args.output_root:
+            print("[info] Using command-line arguments (creating Pydantic parameters)")
+            params = IntermediateParameters(
+                stage_root=args.stage_root,
+                output_root=args.output_root,
+                procedure=args.procedure,
+                voltage_col=args.voltage_col,
+                dv_threshold=args.dv_threshold,
+                min_segment_points=args.min_points,
+                workers=args.workers,
+                polars_threads=args.polars_threads,
+                force=args.force,
+                events_dir=args.events_dir,
+                manifest=args.manifest,
+            )
+
+        else:
+            ap.print_help()
+            print("\n[error] Must provide either --config or (--stage-root and --output-root)")
+            sys.exit(1)
+
+        # Run pipeline with validated parameters
+        run_iv_preprocessing(params)
+
+    except ValidationError as e:
+        print(f"\n[error] Parameter validation failed:")
+        print(e)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[error] {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

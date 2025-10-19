@@ -1,0 +1,41 @@
+{
+  "staging": {
+    "raw_root": "data/01_raw",
+    "stage_root": "data/02_stage/raw_measurements",
+    "procedures_yaml": "config/procedures.yml"
+  },
+  "intermediate": {
+    "stage_root": "data/02_stage/raw_measurements",
+    "output_root": "data/03_intermediate",
+    "procedure": "IV",
+    "voltage_col": "Vsd (V)",
+    "dv_threshold": 0.001,
+    "min_segment_points": 5,
+    "workers": 2,
+    "polars_threads": 1,
+    "force": true
+  },
+  "analysis": {
+    "stage_root": "data/02_stage/raw_measurements",
+    "date": "2025-01-08",
+    "output_base_dir": "data/04_analysis_test",
+    "procedure": "IV",
+    "poly_orders": [1, 3, 5, 7],
+    "compute_hysteresis": false,
+    "analyze_peaks": false,
+    "use_segments": true,
+    "intermediate_root": "data/03_intermediate/iv_segments"
+  },
+  "plotting": {
+    "output_dir": "plots/test_4layer",
+    "dpi": 150,
+    "format": "png",
+    "style": "publication",
+    "compact_layout": false,
+    "show_residuals": false
+  },
+  "run_staging": false,
+  "run_intermediate": true,
+  "run_analysis": true,
+  "run_plotting": false
+}

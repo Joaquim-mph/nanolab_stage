@@ -1,0 +1,51 @@
+{
+  "staging": {
+    "raw_root": "data/01_raw",
+    "stage_root": "data/02_stage/raw_measurements",
+    "procedures_yaml": "config/procedures.yml",
+    "rejects_dir": "data/02_stage/_rejects",
+    "events_dir": "data/02_stage/raw_measurements/_manifest/events",
+    "manifest": "data/02_stage/raw_measurements/_manifest/manifest.parquet",
+    "workers": 12,
+    "polars_threads": 1,
+    "local_tz": "America/Santiago",
+    "force": true,
+    "only_yaml_data": false
+  },
+  "analysis": {
+    "stage_root": "data/02_stage/raw_measurements",
+    "date": "2025-09-11",
+    "output_base_dir": "data/04_analysis",
+    "procedure": "IV",
+    "chip_number": null,
+    "v_max": null,
+    "poly_orders": [
+      1,
+      3,
+      5,
+      7
+    ],
+    "fit_backward": true,
+    "compute_hysteresis": true,
+    "voltage_rounding_decimals": 2,
+    "analyze_peaks": true
+  },
+  "plotting": {
+    "output_dir": "plots/2025-09-11_IV",
+    "dpi": 300,
+    "format": "png",
+    "figure_width": 12.0,
+    "figure_height": 8.0,
+    "style": "publication",
+    "font_size": 10,
+    "line_width": 1.5,
+    "show_error_bars": true,
+    "show_grid": true,
+    "grid_alpha": 0.3,
+    "compact_layout": true,
+    "show_residuals": true
+  },
+  "run_staging": true,
+  "run_analysis": true,
+  "run_plotting": true
+}

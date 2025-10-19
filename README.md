@@ -1,24 +1,62 @@
 # nanolab_stage
-storage-processing-reduction of data
 
-Raw CSVs (01_raw)
-   └─► stage_raw_measurements.py  →  02_stage/raw_measurements/proc=…/date=…/run_id=…/part-000.parquet
-                                       + _manifest/events + manifest.parquet
-          └─► build_curated_from_stage.py  → 03_curated/warehouse/
-                                              ├─ runs_metadata/date=YYYY-MM/runs-<RID>.parquet
-                                              ├─ ts_fact/date=YYYY-MM/ts-<RID>.parquet
-                                              └─ sweep_fact/date=YYYY-MM/sw-<RID>.parquet
+**Medallion-architecture data pipeline for semiconductor/nanoelectronics lab measurements**
 
+## 4-Layer Architecture (Current)
 
+```
+Layer 1: Raw CSVs (01_raw/)
+   ↓
+Layer 2: Stage (02_stage/raw_measurements/)
+   └─► stage_raw_measurements.py → proc=…/date=…/run_id=…/part-000.parquet
+   ↓
+Layer 3: Intermediate (03_intermediate/)
+   └─► iv_preprocessing_script.py → iv_segments/proc=…/date=…/run_id=…/segment=…/
+   ↓
+Layer 4: Analysis (04_analysis/)
+   └─► aggregate_iv_stats.py → iv_stats/, hysteresis/, peaks/
+   ↓
+Plots (plots/)
+   └─► compare_polynomial_orders.py → publication figures
+```
 
-python src/warehouse/stage_raw_measurements.py --raw-root data/01_raw --stage-root data/02_stage/raw_measurements --procedures-yaml config/procedures.yml --workers 4 --polars-threads 2
+## Quick Start
 
-python build_curated_from_stage_parallel.py --stage-root 02_stage/raw_measurements --warehouse-root 03_curated/warehouse --workers 4 --polars-threads 2
+```bash
+# Full 4-layer pipeline (recommended)
+python run_pipeline.py --config config/examples/4layer_pipeline.json
 
+# Or step-by-step:
+# 1. Staging (raw CSV → Parquet)
+python src/staging/stage_raw_measurements.py \
+  --raw-root data/01_raw \
+  --stage-root data/02_stage/raw_measurements \
+  --procedures-yaml config/procedures.yml \
+  --workers 8
 
-python src/warehouse/sanity_check_lab.py --raw-root data/01_raw --stage-root data/02_stage/raw_measurements --warehouse-root data/03_curated/warehouse --local-tz America/Santiago --top-n 6 --plots
+# 2. Preprocessing (segment detection - run once per date)
+python src/intermediate/IV/iv_preprocessing_script.py \
+  --config config/examples/intermediate_config.json
 
+# 3. Analysis (read segments, compute fits - run many times)
+python src/analysis/IV/aggregate_iv_stats.py \
+  --intermediate-root data/03_intermediate/iv_segments \
+  --date 2025-10-18 \
+  --output-base-dir data/04_analysis
+```
 
-python src/warehouse/collect_stats.py --repo-root . --warehouse data/03_curated/warehouse --out-stats data/03_curated/warehouse/stats --docs-dir docs --local-tz America/Santiago --print
+## Documentation
 
-python src/ploting/collect_stats_with_requested_plots.py --repo-root . --plots --print
+- **`QUICK_START.md`** - Get started in 5 minutes
+- **`4LAYER_COMPLETE.md`** - Complete 4-layer architecture guide
+- **`FOUR_LAYER_ARCHITECTURE.md`** - Architecture design details
+- **`CLAUDE.md`** - Detailed implementation reference for Claude Code
+
+## Key Features
+
+- **4-layer medallion architecture** for clean data flow
+- **Pre-segmented intermediate layer** for 10x faster repeated analysis
+- **Pydantic v2 configuration** with validation
+- **Parallel processing** with ProcessPoolExecutor
+- **Hive-partitioned Parquet** for efficient storage
+- **Publication-quality plots** with matplotlib

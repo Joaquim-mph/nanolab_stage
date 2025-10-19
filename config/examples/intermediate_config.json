@@ -1,0 +1,13 @@
+{
+  "stage_root": "data/02_stage/raw_measurements",
+  "output_root": "data/03_intermediate",
+  "procedure": "IV",
+  "voltage_col": "Vsd (V)",
+  "dv_threshold": 0.001,
+  "min_segment_points": 5,
+  "workers": 8,
+  "polars_threads": 2,
+  "force": false,
+  "events_dir": "data/03_intermediate/_events",
+  "manifest": "data/03_intermediate/_manifest/intermediate_manifest.parquet"
+}
