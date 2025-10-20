@@ -148,12 +148,13 @@ def create_per_day_staggered_plots(
     power_map: dict,
     output_dir: Path,
     poly_order: int = 5,
-    offset_factor: float = 0.0015
+    offset_factor: float = 0.01
 ):
     """
     Create staggered plots: all voltage ranges vertically offset.
 
     One figure per date, curves offset to avoid overlap.
+    Shows both forward and backward traces.
     """
     from pathlib import Path as P
     sys.path.insert(0, str(P(__file__).parent.parent.parent / 'ploting'))
@@ -180,16 +181,35 @@ def create_per_day_staggered_plots(
         # Plot each voltage range with vertical offset
         for idx, vmax in enumerate(voltage_ranges):
             try:
-                df = load_backward_subtracted_data(data_dir, date, vmax, poly_order)
+                vmax_str = str(vmax).replace(".", "p")
+                file_path = data_dir / date / f"backward_sub_vmax{vmax_str}V.csv"
 
-                E = df["E"].to_numpy()
-                J = df["J_forward"].to_numpy()
+                if not file_path.exists():
+                    raise FileNotFoundError(f"Data file not found: {file_path}")
+
+                df = pl.read_csv(file_path)
+
+                # Get both forward and backward columns
+                j_fwd_col = f"J_forward_sub_poly{poly_order} (A/cm2)"
+                j_bwd_col = f"J_backward_sub_poly{poly_order} (A/cm2)"
+
+                if j_fwd_col not in df.columns or j_bwd_col not in df.columns:
+                    raise ValueError(f"Columns not found in {file_path}")
+
+                E = df["E (V/cm)"].to_numpy()
+                J_fwd = df[j_fwd_col].to_numpy()
+                J_bwd = df[j_bwd_col].to_numpy()
 
                 # Apply vertical offset
                 offset = idx * offset_factor
-                J_offset = J + offset
+                J_fwd_offset = J_fwd + offset
+                J_bwd_offset = J_bwd + offset
 
-                ax.plot(E, J_offset, '-', label=f'V$_{{max}}$ = {vmax}V',
+                # Plot forward and backward with same color
+                # Only label once in legend
+                ax.plot(E, J_fwd_offset, '-', label=f'V$_{{max}}$ = {vmax}V',
+                       color=colors[idx], linewidth=1.8, alpha=0.8)
+                ax.plot(E, J_bwd_offset, '--',  # Dashed for backward
                        color=colors[idx], linewidth=1.8, alpha=0.8)
 
             except FileNotFoundError:
@@ -310,7 +330,7 @@ def main():
     parser.add_argument(
         "--poly-order",
         type=int,
-        default=5,
+        default=1,
         help="Polynomial order to plot (default: 5)"
     )
     parser.add_argument(
@@ -328,8 +348,8 @@ def main():
     parser.add_argument(
         "--offset-factor",
         type=float,
-        default=0.0015,
-        help="Vertical offset factor for staggered plots (default: 0.0015)"
+        default=0.008,
+        help="Vertical offset factor for staggered plots (default: 0.003)"
     )
 
     args = parser.parse_args()
