@@ -1,37 +1,48 @@
-# Quick Start Guide - 4-Layer Pipeline
+# Quick Start Guide - Nanolab Pipeline
 
 ## TL;DR - Just Run This
 
 ```bash
-# Full 4-layer pipeline (preprocessing + analysis + plotting)
-python run_pipeline.py --config config/examples/4layer_pipeline.json
+# Full pipeline with CLI (uses default paths)
+python nanolab-pipeline.py pipeline
 ```
 
-That's it! The pipeline will:
-1. ✅ Validate all parameters
-2. ✅ Run intermediate preprocessing (segment detection - runs once)
-3. ✅ Aggregate IV statistics (reads pre-segmented data - fast!)
-4. ✅ Compute hysteresis
-5. ✅ Analyze peaks
-6. ✅ Create publication plots
+That's it! The CLI pipeline will:
+1. ✅ Stage raw CSV files → Parquet (Layer 1 → 2)
+2. ✅ Preprocess and segment voltage sweeps (Layer 2 → 3)
+3. ✅ Uses sensible defaults for all paths
+4. ✅ Parallel processing with progress bars
+5. ✅ Idempotent (safe to rerun)
 
-**Note:** The 4-layer architecture requires preprocessing before analysis. This is faster for repeated analysis on the same date!
+**Default Paths:**
+- Raw: `data/01_raw/`
+- Staged: `data/02_stage/raw_measurements/`
+- Intermediate: `data/03_intermediate/iv_segments/`
+
+**Note:** For analysis and plotting (Layer 4), use the analysis scripts after preprocessing completes.
 
 ---
 
 ## Common Use Cases
 
-### 1. Full 4-Layer Pipeline (Recommended)
+### 1. Full Pipeline with CLI (Recommended)
 
 ```bash
-# Use the complete 4-layer config
-python run_pipeline.py --config config/examples/4layer_pipeline.json
+# Simplest - uses all defaults
+python nanolab-pipeline.py pipeline
+
+# With custom worker count
+python nanolab-pipeline.py pipeline --workers 12
+
+# With config file
+python nanolab-pipeline.py pipeline --config config/complete_run.json
 ```
 
 This runs:
-- Intermediate preprocessing (segments voltage sweeps)
-- Analysis (reads pre-segmented data, computes fits)
-- Plotting (creates publication figures)
+- Stage 1: Raw CSV → Staged Parquet (Layer 1 → 2)
+- Stage 2: Voltage sweep segmentation (Layer 2 → 3)
+- Complete process isolation via subprocesses
+- Professional progress bars and status reporting
 
 ### 2. Create Your Own 4-Layer Config
 
@@ -75,7 +86,25 @@ EOF
 python run_pipeline.py --config config/my_4layer.json
 ```
 
-### 3. Individual Steps (4-Layer Approach)
+### 2. Individual Pipeline Stages
+
+```bash
+# Stage only (uses defaults)
+python nanolab-pipeline.py stage
+
+# Stage with custom workers
+python nanolab-pipeline.py stage --workers 12
+
+# Preprocess only (uses defaults)
+python nanolab-pipeline.py preprocess
+
+# Preprocess different procedure
+python nanolab-pipeline.py preprocess --procedure IVg
+```
+
+### 3. Analysis and Visualization (Layer 4)
+
+After running staging and preprocessing, run analysis:
 
 ```bash
 # Step 1: Staging (if needed)

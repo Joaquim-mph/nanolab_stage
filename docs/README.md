@@ -14,6 +14,25 @@ This directory contains all project documentation organized by topic.
   - Data flow and transformations
   - Performance optimizations
 
+- **[ADDING_NEW_PROCEDURES.md](ADDING_NEW_PROCEDURES.md)** - Professional guide for extending the pipeline
+  - Methodology for adding new measurement procedures (IVg, ITt, etc.)
+  - Step-by-step implementation guide
+  - Best practices and examples
+  - Testing and validation strategies
+
+- **[PIPELINE_VISUALIZATION.md](PIPELINE_VISUALIZATION.md)** - Visual documentation guide
+  - Generate professional Graphviz diagrams
+  - 5 different diagram types (overview, detailed, CLI, IV analysis, templates)
+  - Multiple output formats (PNG, SVG, PDF)
+  - Customization and usage examples
+
+- **[PLOTTING_CONFIGURATION.md](PLOTTING_CONFIGURATION.md)** - Publication-ready plotting guide
+  - Matplotlib configuration for scientific figures
+  - 4 professional themes (default, prism_rain, minimal, presentation)
+  - Colorblind-friendly palettes
+  - Helper functions and examples
+  - Integration with existing scripts
+
 ### CLI Documentation
 - **[CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md)** - Complete CLI technical documentation
   - Technology stack (Typer + Rich)
@@ -98,6 +117,9 @@ nanolab_stage/
 #### Understand the architecture
 → Read [4LAYER_COMPLETE.md](4LAYER_COMPLETE.md)
 
+#### Add a new measurement procedure
+→ Follow [ADDING_NEW_PROCEDURES.md](ADDING_NEW_PROCEDURES.md)
+
 #### Use the CLI
 → Check [CLI_QUICK_REFERENCE.md](CLI_QUICK_REFERENCE.md)
 
@@ -106,6 +128,12 @@ nanolab_stage/
 
 #### Understand CLI implementation
 → Read [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md)
+
+#### Generate pipeline diagrams
+→ Follow [PIPELINE_VISUALIZATION.md](PIPELINE_VISUALIZATION.md)
+
+#### Create publication-ready plots
+→ Follow [PLOTTING_CONFIGURATION.md](PLOTTING_CONFIGURATION.md)
 
 #### See what was accomplished
 → Review [CLI_IMPLEMENTATION_SUMMARY.md](CLI_IMPLEMENTATION_SUMMARY.md)

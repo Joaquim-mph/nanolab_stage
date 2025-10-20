@@ -1,5 +1,3 @@
-import matplotlib.pyplot as plt 
-# Common settings to apply to all styles
 import matplotlib.pyplot as plt
 
 # ============================================================================
@@ -16,15 +14,32 @@ COMMON_RC = {
 # Color Palettes
 # ============================================================================
 PRISM_RAIN_PALETTE = [
-    # Primary vibrant colors (most used)
-    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3",
-    "#ff7f00", "#a65628", "#f781bf", "#999999",
-    # Secondary soft colors
-    "#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3",
-    # Tertiary accent colors
-    "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3",
-    # Additional deep colors
-    "#1b9e77", "#d95f02", "#7570b3", "#e7298a"
+    # Primary vibrant colors (classic, high-contrast)
+    "#e41a1c",  # red
+    "#377eb8",  # blue
+    "#4daf4a",  # green
+    "#984ea3",  # purple
+    "#ff7f00",  # orange
+
+    # Extended vivid tones (brighter, neon-like accents)
+    "#00bfc4",  # cyan-teal
+    "#f781bf",  # pink
+    "#ffd92f",  # bright yellow
+    "#a65628",  # warm brown-orange
+    "#8dd3c7",  # aqua-mint
+
+    # Deep complementary accents (maintain contrast)
+    "#b2182b",  # crimson
+    "#2166ac",  # royal blue
+    "#1a9850",  # rich green
+    "#762a83",  # deep violet
+    "#e08214",  # vivid amber
+]
+
+PRISM_RAIN_PALETTE_VIVID = [
+    "#ff0054", "#0099ff", "#00cc66", "#cc33ff", "#ffaa00",
+    "#00e6e6", "#ff66b2", "#ffe600", "#ff3300", "#00b3b3",
+    "#3366ff", "#66ff33", "#9933ff", "#ff9933", "#33ccff",
 ]
 
 # ============================================================================
@@ -41,22 +56,30 @@ THEMES = {
             "axes.facecolor": "#ffffff",
             "savefig.facecolor": "#ffffff",
             
-            # Typography
-            "font.family": "sans-serif",
-            "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
-            "font.size": 11.5,
-            "axes.labelsize": 13,
-            "axes.titlesize": 14.5,
+            # Typography - FIXED SIZES FOR BETTER BALANCE
+            #"font.family": "serif",  # ← FIXED (was "serif")
+            "font.sans-serif": ["Source Sans Pro Black", "Source Sans 3"],
+            "font.size": 35,              # ← REDUCED from 35
+            
+            "axes.labelsize": 55,         # ← REDUCED from 55 (axis labels)
+            "axes.titlesize": 55,         # ← REDUCED from 55 (title)
             "axes.labelweight": "normal",
             
             # Axes and ticks
             "axes.edgecolor": "#222222",
             "axes.labelcolor": "#222222",
-            "axes.linewidth": 1.2,
+            "axes.linewidth": 3.5,        # ← REDUCED from 3.5
+            
             "xtick.color": "#333333",
             "ytick.color": "#333333",
-            "xtick.major.width": 1.0,
-            "ytick.major.width": 1.0,
+            "xtick.major.size": 10.0,      # ← REDUCED from 10.0
+            "ytick.major.size": 10.0,      # ← REDUCED from 10.0
+            "xtick.major.width": 2,
+            "ytick.major.width": 2,
+            "xtick.labelsize": 55,        # ← REDUCED from 55 (tick numbers!)
+            "ytick.labelsize": 55,        # ← REDUCED from 55 (tick numbers!)
+            "xtick.major.pad": 20,        # ← REDUCED from 20
+            "ytick.major.pad": 20,        # ← REDUCED from 20
             
             # Grid
             "grid.color": "#cccccc",
@@ -65,18 +88,18 @@ THEMES = {
             "grid.alpha": 0.6,
             
             # Lines and markers
-            "lines.linewidth": 1.8,
-            "lines.markersize": 6,
+            "lines.linewidth": 6,         # ← REDUCED from 6
+            "lines.markersize": 22,       # ← REDUCED from 22
             "lines.antialiased": True,
             
             # Legend
             "legend.frameon": False,
-            "legend.fontsize": 11,
+            "legend.fontsize": 35,        # ← REDUCED from 35
             "legend.loc": "best",
-            "legend.fancybox": False,
+            "legend.fancybox": True,
             
             # Figure size (optimized for papers)
-            "figure.figsize": (8.6, 4.6),
+            "figure.figsize": (20, 20),
             "figure.dpi": 100,
             "savefig.dpi": 300,
             "savefig.bbox": "tight",
@@ -88,12 +111,10 @@ THEMES = {
     },
 }
 
-
-
 # ============================================================================
 # Helper function to apply theme
 # ============================================================================
-def apply_theme(theme_name="prism_rain"):
+def set_plot_style(theme_name="prism_rain"):
     """Apply a publication-ready matplotlib theme.
     
     Parameters
@@ -103,7 +124,7 @@ def apply_theme(theme_name="prism_rain"):
         
     Example
     -------
-    >>> apply_theme("prism_rain")
+    >>> set_plot_style("prism_rain")
     >>> plt.plot([1, 2, 3], [1, 4, 9])
     >>> plt.show()
     """

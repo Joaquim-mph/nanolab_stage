@@ -6,6 +6,8 @@ Layout: 8 subplots (one per V_max range)
 Each subplot shows:
 - Raw hysteresis data (scatter points)
 - Polynomial fits for orders 1, 3, 5, 7 (different colors/styles)
+
+Uses publication-ready matplotlib configuration.
 """
 
 import polars as pl
@@ -13,12 +15,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 import argparse
+import sys
+
+# Add plotting config to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from plotting_config import setup_publication_style, save_figure, get_color_cycle
 
 
-def plot_all_ranges_all_polynomials(hysteresis_dir: Path, output_dir: Path):
+def plot_all_ranges_all_polynomials(hysteresis_dir: Path, output_dir: Path,
+                                    theme='default'):
     """
     Create single figure with 8 subplots comparing all polynomial orders.
+
+    Parameters
+    ----------
+    hysteresis_dir : Path
+        Directory containing hysteresis CSV files
+    output_dir : Path
+        Output directory for figures
+    theme : str, default='default'
+        Plotting theme: 'default', 'prism_rain', 'minimal', 'presentation'
     """
+
+    # Setup publication style
+    setup_publication_style(theme=theme, dpi=300)
 
     # Load all hysteresis files
     hyst_files = sorted(hysteresis_dir.glob("hysteresis_vmax*.csv"))
@@ -30,15 +50,18 @@ def plot_all_ranges_all_polynomials(hysteresis_dir: Path, output_dir: Path):
     n_ranges = len(hyst_files)
 
     # Create figure with 2 rows, 4 columns
-    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+    fig, axes = plt.subplots(2, 4, figsize=(20, 12))
     axes = axes.flatten()
 
-    # Define colors and styles for polynomial orders
+    # Get colors from color cycle for consistency
+    colors = get_color_cycle('prism_rain' if theme == 'prism_rain' else 'default', n_colors=4)
+
+    # Define colors and styles for polynomial orders using publication palette
     poly_styles = {
-        1: {'color': 'red', 'linestyle': '-', 'linewidth': 2, 'alpha': 0.8},
-        3: {'color': 'blue', 'linestyle': '-', 'linewidth': 2, 'alpha': 0.8},
-        5: {'color': 'green', 'linestyle': '-', 'linewidth': 2, 'alpha': 0.8},
-        7: {'color': 'purple', 'linestyle': '-', 'linewidth': 2, 'alpha': 0.8}
+        1: {'color': colors[0], 'linestyle': '-', 'linewidth': 2, 'alpha': 0.9, 'label': 'Order 1'},
+        3: {'color': colors[1], 'linestyle': '-', 'linewidth': 2, 'alpha': 0.9, 'label': 'Order 3'},
+        5: {'color': colors[2], 'linestyle': '-', 'linewidth': 2, 'alpha': 0.9, 'label': 'Order 5'},
+        7: {'color': colors[3], 'linestyle': '-', 'linewidth': 2, 'alpha': 0.9, 'label': 'Order 7'}
     }
 
     for idx, hyst_file in enumerate(hyst_files):
@@ -138,12 +161,10 @@ def plot_all_ranges_all_polynomials(hysteresis_dir: Path, output_dir: Path):
 
     plt.tight_layout(rect=[0, 0, 1, 0.985])
 
-    output_file = output_dir / "all_ranges_all_polynomials.png"
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"\nSaved: {output_file}")
+    # Save using publication helper (saves in multiple formats)
+    save_figure(fig, output_dir / "all_ranges_all_polynomials",
+                formats=['png', 'pdf'], dpi=300)
     print(f"Figure shows {n_ranges} voltage ranges with polynomial orders 1, 3, 5, 7")
-
-    plt.close()
 
 
 def plot_all_ranges_all_polynomials_compact(hysteresis_dir: Path, output_dir: Path):

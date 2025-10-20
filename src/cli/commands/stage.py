@@ -14,7 +14,7 @@ from ..utils.logging import setup_rich_logging
 
 def stage(
     raw_root: Path = typer.Option(
-        ...,
+        "data/01_raw",
         "--raw-root",
         help="Directory containing raw CSV files",
         exists=True,
@@ -23,7 +23,7 @@ def stage(
         readable=True,
     ),
     stage_root: Path = typer.Option(
-        ...,
+        "data/02_stage/raw_measurements",
         "--stage-root",
         help="Output directory for staged Parquet files",
         file_okay=False,
@@ -83,10 +83,14 @@ def stage(
       • Writes Parquet files partitioned by proc/date/run_id
 
     \b
-    Example:
+    Example (using defaults):
+      nanolab-pipeline stage
+
+    \b
+    Example (custom paths):
       nanolab-pipeline stage \\
-        --raw-root data/01_raw \\
-        --stage-root data/02_stage/raw_measurements \\
+        --raw-root /path/to/raw \\
+        --stage-root /path/to/stage \\
         --workers 8
     """
     # Print step header

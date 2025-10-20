@@ -39,7 +39,7 @@ def create_pipeline_overview() -> Panel:
 
 def pipeline_subprocess(
     raw_root: Path = typer.Option(
-        ...,
+        "data/01_raw",
         "--raw-root",
         help="Directory containing raw CSV files",
         exists=True,
@@ -48,14 +48,14 @@ def pipeline_subprocess(
         readable=True,
     ),
     stage_root: Path = typer.Option(
-        ...,
+        "data/02_stage/raw_measurements",
         "--stage-root",
         help="Output directory for staged Parquet files",
         file_okay=False,
         dir_okay=True,
     ),
     output_root: Path = typer.Option(
-        ...,
+        "data/03_intermediate/iv_segments",
         "--output-root",
         help="Output directory for preprocessed segments",
         file_okay=False,
@@ -133,11 +133,19 @@ def pipeline_subprocess(
     resource conflicts, state pollution, or deadlocks between stages.
 
     \b
-    Example:
+    Example (using defaults):
+      nanolab-pipeline pipeline
+
+    \b
+    Example (with custom workers):
+      nanolab-pipeline pipeline --workers 12
+
+    \b
+    Example (custom paths):
       nanolab-pipeline pipeline \\
-        --raw-root data/01_raw \\
-        --stage-root data/02_stage/raw_measurements \\
-        --output-root data/03_intermediate \\
+        --raw-root /path/to/raw \\
+        --stage-root /path/to/stage \\
+        --output-root /path/to/intermediate \\
         --workers 8
     """
     logger = setup_rich_logging("INFO")

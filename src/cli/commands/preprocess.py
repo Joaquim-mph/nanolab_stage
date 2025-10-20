@@ -24,7 +24,7 @@ def preprocess(
         readable=True,
     ),
     stage_root: Optional[Path] = typer.Option(
-        None,
+        "data/02_stage/raw_measurements",
         "--stage-root",
         help="Directory containing staged Parquet files",
         exists=True,
@@ -33,7 +33,7 @@ def preprocess(
         readable=True,
     ),
     output_root: Optional[Path] = typer.Option(
-        None,
+        "data/03_intermediate/iv_segments",
         "--output-root",
         help="Output directory for segmented data",
         file_okay=False,
@@ -96,14 +96,18 @@ def preprocess(
       • Run once per date, read many times (10x performance!)
 
     \b
-    Example using config file:
+    Example (using defaults):
+      nanolab-pipeline preprocess
+
+    \b
+    Example (using config file):
       nanolab-pipeline preprocess --config config/examples/intermediate_config.json
 
     \b
-    Example using CLI options:
+    Example (custom paths):
       nanolab-pipeline preprocess \\
-        --stage-root data/02_stage/raw_measurements \\
-        --output-root data/03_intermediate \\
+        --stage-root /path/to/stage \\
+        --output-root /path/to/intermediate \\
         --procedure IV \\
         --workers 8
     """

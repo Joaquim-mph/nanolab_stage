@@ -1,0 +1,207 @@
+## Nanolab Publication-Ready Matplotlib Configuration
+##
+## This file contains matplotlib settings optimized for publication-quality
+## scientific figures. Based on scienceplots with custom optimizations.
+##
+## Usage:
+##   1. Use via Python: plt.style.use('path/to/this/file')
+##   2. Or use via plotting_config.py module
+##
+## Reference: https://matplotlib.org/stable/tutorials/introductory/customizing.html
+
+# =============================================================================
+# FIGURE
+# =============================================================================
+figure.figsize      : 10, 8         # Figure size (width, height) in inches
+figure.dpi          : 100           # Figure resolution for screen display
+figure.facecolor    : white         # Figure background color
+figure.edgecolor    : white         # Figure edge color
+figure.autolayout   : False         # Use tight_layout for better spacing
+figure.constrained_layout.use : True  # Automatically adjust spacing
+
+# =============================================================================
+# SAVING FIGURES
+# =============================================================================
+savefig.dpi         : 300           # Resolution for saved figures (publication standard)
+savefig.format      : png           # Default save format
+savefig.bbox        : tight         # Remove extra whitespace ('tight' or 'standard')
+savefig.pad_inches  : 0.1           # Padding when bbox is 'tight'
+savefig.facecolor   : white         # Saved figure background
+savefig.edgecolor   : white         # Saved figure edge color
+savefig.transparent : False         # Transparent background
+
+# =============================================================================
+# FONT
+# =============================================================================
+font.family         : sans-serif    # Font family (serif, sans-serif, monospace)
+font.size           : 11            # Base font size in points
+font.sans-serif     : DejaVu Sans, Arial, Helvetica, sans-serif
+font.serif          : DejaVu Serif, Times New Roman, serif
+font.monospace      : DejaVu Sans Mono, Courier New, monospace
+
+# =============================================================================
+# TEXT
+# =============================================================================
+text.usetex         : False         # Use LaTeX for text rendering (set True for LaTeX)
+text.color          : black         # Default text color
+
+# =============================================================================
+# AXES
+# =============================================================================
+axes.facecolor      : white         # Axes background color
+axes.edgecolor      : black         # Axes edge color
+axes.linewidth      : 1.0           # Axes line width
+axes.grid           : False         # Display grid by default
+axes.titlesize      : 12            # Font size for axes title
+axes.titleweight    : bold          # Font weight for axes title
+axes.titlepad       : 6.0           # Padding above axes title
+axes.labelsize      : 11            # Font size for x and y labels
+axes.labelweight    : normal        # Font weight for axis labels
+axes.labelpad       : 4.0           # Spacing between label and axis
+axes.labelcolor     : black         # Color of axis labels
+axes.axisbelow      : True          # Draw grid/ticks below data
+axes.formatter.use_mathtext : True  # Use mathtext for scientific notation
+axes.formatter.limits : -3, 4       # Use scientific notation outside this range
+axes.spines.left    : True          # Display left spine
+axes.spines.bottom  : True          # Display bottom spine
+axes.spines.top     : True          # Display top spine
+axes.spines.right   : True          # Display right spine
+
+# Color cycle (colorblind-friendly palette)
+axes.prop_cycle : cycler('color', ['1f77b4', 'ff7f0e', '2ca02c', 'd62728', '9467bd', '8c564b', 'e377c2', '7f7f7f', 'bcbd22', '17becf'])
+
+# =============================================================================
+# TICKS
+# =============================================================================
+# X-axis
+xtick.top           : False         # Draw ticks on top of plot
+xtick.bottom        : True          # Draw ticks on bottom of plot
+xtick.major.size    : 4.0           # Major tick size in points
+xtick.minor.size    : 2.0           # Minor tick size in points
+xtick.major.width   : 1.0           # Major tick width in points
+xtick.minor.width   : 0.8           # Minor tick width in points
+xtick.major.pad     : 4.0           # Distance to label in points
+xtick.minor.pad     : 4.0           # Distance to label in points
+xtick.color         : black         # Tick color
+xtick.labelsize     : 10            # Font size for tick labels
+xtick.direction     : in            # Direction: in, out, or inout
+xtick.minor.visible : False         # Show minor ticks
+xtick.alignment     : center        # Alignment of ticks
+
+# Y-axis
+ytick.left          : True          # Draw ticks on left of plot
+ytick.right         : False         # Draw ticks on right of plot
+ytick.major.size    : 4.0           # Major tick size in points
+ytick.minor.size    : 2.0           # Minor tick size in points
+ytick.major.width   : 1.0           # Major tick width in points
+ytick.minor.width   : 0.8           # Minor tick width in points
+ytick.major.pad     : 4.0           # Distance to label in points
+ytick.minor.pad     : 4.0           # Distance to label in points
+ytick.color         : black         # Tick color
+ytick.labelsize     : 10            # Font size for tick labels
+ytick.direction     : in            # Direction: in, out, or inout
+ytick.minor.visible : False         # Show minor ticks
+ytick.alignment     : center_baseline  # Alignment of ticks
+
+# =============================================================================
+# GRID
+# =============================================================================
+grid.color          : cccccc        # Grid color (light gray)
+grid.linestyle      : --            # Grid line style
+grid.linewidth      : 0.5           # Grid line width
+grid.alpha          : 0.7           # Grid transparency
+
+# =============================================================================
+# LEGEND
+# =============================================================================
+legend.loc          : best          # Location: best, upper right, etc.
+legend.frameon      : True          # Draw frame around legend
+legend.framealpha   : 0.9           # Legend frame transparency
+legend.facecolor    : white         # Legend background color
+legend.edgecolor    : black         # Legend frame edge color
+legend.fancybox     : False         # Rounded corners
+legend.shadow       : False         # Drop shadow
+legend.fontsize     : 10            # Legend font size
+legend.title_fontsize : 11          # Legend title font size
+legend.borderpad    : 0.4           # Padding inside legend border
+legend.labelspacing : 0.5           # Vertical spacing between entries
+legend.handlelength : 2.0           # Length of legend handles
+legend.handleheight : 0.7           # Height of legend handles
+legend.handletextpad : 0.8          # Spacing between handle and text
+legend.borderaxespad : 0.5          # Padding between axes and legend
+legend.columnspacing : 2.0          # Column spacing for multi-column legends
+
+# =============================================================================
+# LINES
+# =============================================================================
+lines.linewidth     : 1.5           # Line width in points
+lines.linestyle     : -             # Solid line
+lines.color         : C0            # Default line color (from color cycle)
+lines.marker        : None          # Default marker
+lines.markeredgewidth : 1.0         # Marker edge width
+lines.markersize    : 6             # Marker size in points
+lines.antialiased   : True          # Render lines in antialiased mode
+
+# =============================================================================
+# PATCHES (filled polygons, bars, etc.)
+# =============================================================================
+patch.linewidth     : 1.0           # Edge width for patches
+patch.facecolor     : C0            # Patch fill color
+patch.edgecolor     : black         # Patch edge color
+patch.antialiased   : True          # Render patches antialiased
+
+# =============================================================================
+# SCATTER PLOTS
+# =============================================================================
+scatter.marker      : o             # Default marker style
+scatter.edgecolors  : face          # Edge color: 'face' matches facecolor
+
+# =============================================================================
+# IMAGES
+# =============================================================================
+image.cmap          : viridis       # Default colormap
+image.aspect        : equal         # Aspect ratio: auto, equal
+image.interpolation : antialiased   # Interpolation method
+image.origin        : upper         # Origin position
+
+# =============================================================================
+# CONTOUR PLOTS
+# =============================================================================
+contour.negative_linestyle : dashed # Line style for negative contours
+
+# =============================================================================
+# ERRORBAR
+# =============================================================================
+errorbar.capsize    : 3             # Length of error bar caps in points
+
+# =============================================================================
+# HISTOGRAM
+# =============================================================================
+hist.bins           : 10            # Default number of bins
+
+# =============================================================================
+# BOXPLOT
+# =============================================================================
+boxplot.bootstrap   : None          # Number of bootstrap samples
+boxplot.patchartist : False         # Use patches for boxes
+boxplot.showmeans   : False         # Show mean markers
+boxplot.showcaps    : True          # Show caps on whiskers
+boxplot.showbox     : True          # Show box
+boxplot.showfliers  : True          # Show outliers
+boxplot.whiskers    : 1.5           # Whisker length (IQR multiplier)
+
+# =============================================================================
+# DATE FORMATTING
+# =============================================================================
+date.autoformatter.year     : %Y
+date.autoformatter.month    : %Y-%m
+date.autoformatter.day      : %Y-%m-%d
+date.autoformatter.hour     : %m-%d %H
+date.autoformatter.minute   : %d %H:%M
+date.autoformatter.second   : %H:%M:%S
+date.autoformatter.microsecond : %M:%S.%f
+
+# =============================================================================
+# BACKEND
+# =============================================================================
+## backend: Agg  # Use Agg backend for non-interactive plotting
